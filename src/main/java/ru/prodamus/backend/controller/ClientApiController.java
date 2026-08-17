@@ -51,6 +51,19 @@ public class ClientApiController {
                 body.deviceId(), body.clientVersion(), body.clientContext(), body.dualSession());
     }
 
+    @PostMapping("/predictive-v2-live-sessions")
+    public LiveSessionService.PredictiveSessionBundle startPredictiveV2(
+            @Valid @RequestBody StartSessionRequest body, HttpServletRequest request) {
+        ClientAuthService.AuthenticatedClient client = client(request);
+        ClientBootstrapService.Bootstrap state = bootstrap.bootstrap(client.userId(), body.clientVersion());
+        if (state.version().updateRequired()) {
+            throw ApiException.conflict("CLIENT_UPDATE_REQUIRED",
+                    "Версия приложения больше не поддерживается. Обновите Prodamus Predictive 2.");
+        }
+        return liveSessions.startPredictiveV2(client.userId(), client.deviceId(), body.promptProfileId(),
+                body.deviceId(), body.clientVersion(), body.clientContext());
+    }
+
     private ClientAuthService.AuthenticatedClient client(HttpServletRequest request) {
         Object value = request.getAttribute(ClientAuthInterceptor.CLIENT);
         if (value instanceof ClientAuthService.AuthenticatedClient client) return client;

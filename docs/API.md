@@ -92,6 +92,17 @@ session fields and adds `dualSession`.
 If two distinct credentials are unavailable, the request fails with `NO_AI_CAPACITY` and does not silently
 fall back. The existing `/api/client/live-sessions` endpoint and its response are unchanged.
 
+## POST /api/client/predictive-v2-live-sessions
+
+Additive contract for the `predictive-v2` experiment. The request is identical to the regular start-session
+request and always atomically reserves two different credentials. The returned bundle has mode
+`PREDICTIVE_V2`: `tactical` is the only visible recommender and `predictive` is a hidden three-scenario
+forecaster. The native client passes forecast text directly between the two Gemini WebSockets; the backend
+does not receive audio, forecasts, recommendations or conversation history.
+
+If two distinct credentials are unavailable, the endpoint returns `NO_AI_CAPACITY`. The regular and first
+predictive contracts remain unchanged.
+
 ## POST /api/client/live-sessions/{sessionId}/token
 
 Reissues a short-lived constrained Gemini token for an already active Prodamus session. Used by the Windows client for long-running calls without exposing the permanent Gemini API key.

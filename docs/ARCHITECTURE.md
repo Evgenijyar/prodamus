@@ -15,6 +15,11 @@ The optional predictive client can request either one combined token or an atomi
 two distinct available credentials. In dual mode the Windows client fans captured utterances out directly to
 a tactical and a forecasting Gemini Live session. This additive endpoint does not alter the regular client flow.
 
+Predictive V2 keeps the forecaster invisible. It generates three distinguishable next-turn scenarios with
+early recognition cues. The Windows client forwards the latest completed forecast directly to the recommender
+as labeled realtime text, then sends the first customer audio segment after roughly 0.9 seconds. Later segments
+revise the same visible recommendation card. No inter-session content passes through this backend.
+
 ## Security model
 
 - User passwords: PBKDF2-HMAC-SHA256 with a random salt.

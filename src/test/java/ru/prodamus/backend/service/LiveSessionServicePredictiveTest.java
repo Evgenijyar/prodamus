@@ -117,6 +117,31 @@ class LiveSessionServicePredictiveTest {
     }
 
     @Test
+    void predictiveV2UsesHiddenScenariosAndSingleVisibleRecommender() {
+        when(credentials.lockEnabledCredentials()).thenReturn(List.of(first, second));
+        Instant expires = Instant.now().plusSeconds(3600);
+        when(gemini.createConstrainedToken(anyString(), anyString(), anyString()))
+                .thenReturn(token("token-recommender", expires), token("token-forecaster", expires));
+
+        LiveSessionService.PredictiveSessionBundle result = service.startPredictiveV2(
+                1L, "device", 7L, "device", "1.5.0-predictive.2", "");
+
+        assertThat(result.mode()).isEqualTo("PREDICTIVE_V2");
+        assertThat(result.tactical().ephemeralToken()).isEqualTo("token-recommender");
+        assertThat(result.predictive().ephemeralToken()).isEqualTo("token-forecaster");
+
+        ArgumentCaptor<String> instruction = ArgumentCaptor.forClass(String.class);
+        verify(gemini, times(2)).createConstrainedToken(anyString(), eq("gemini-3.1-flash-live-preview"),
+                instruction.capture());
+        assertThat(instruction.getAllValues().get(0))
+                .contains("единственный видимый менеджеру рекомендатель")
+                .contains("[СКРЫТЫЙ ПРОГНОЗ]");
+        assertThat(instruction.getAllValues().get(1))
+                .contains("ровно ТРИ взаимоисключающих")
+                .contains("ПРИЗНАКИ");
+    }
+
+    @Test
     void dualModeDoesNotFallBackWhenOnlyOneDistinctCredentialIsFree() {
         when(credentials.lockEnabledCredentials()).thenReturn(List.of(first));
 

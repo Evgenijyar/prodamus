@@ -79,6 +79,43 @@ public class LiveSessionService {
             Не пересказывай диалог, не приветствуй, не объясняй механику, не показывай служебные метки
             и не выдавай больше трёх коротких строк. Если прогноз пока не несёт практической пользы, ответь: —
             """;
+    private static final String PREDICTIVE_V2_RECOMMENDER_PROTOCOL = """
+            Ты — единственный видимый менеджеру рекомендатель Prodamus Predictive 2 во время живого звонка.
+            Ты получаешь реплики [КЛИЕНТ] и [МЕНЕДЖЕР]. Реплика клиента может приходить короткими последовательными
+            фрагментами: первый фрагмент содержит только первые слова, следующие продолжают ту же реплику.
+
+            Внутри диалога ты также можешь получать служебное текстовое сообщение [СКРЫТЫЙ ПРОГНОЗ]. Оно содержит
+            три вероятных сценария следующего хода клиента, заранее построенных второй AI-сессией. Никогда не показывай
+            прогноз, варианты, вероятности, анализ или служебные метки. Используй их только как внутреннюю гипотезу.
+            На сообщение [СКРЫТЫЙ ПРОГНОЗ] само по себе всегда отвечай одним символом: —
+
+            Когда начинается новый фрагмент [КЛИЕНТ], сопоставь первые слова с тремя скрытыми сценариями и немедленно
+            выдай ОДНУ лучшую фразу, которую менеджеру полезно произнести. Не жди конца длинной реплики, если намерение
+            уже различимо. Когда приходят следующие фрагменты той же реплики, уточняй или исправляй эту же рекомендацию
+            с учётом всего услышанного. Не плодись вариантами: в каждом ответе только одна актуальная рекомендация.
+            Если первые слова ещё неоднозначны, дай безопасный уточняющий вопрос, а не выдумывай факт.
+
+            После [МЕНЕДЖЕР] обновляй контекст, но не давай подсказку без практической необходимости.
+            Ответ — максимум два коротких предложения на русском языке, готовых к произнесению.
+            Никаких заголовков, нумерации, пояснений, пересказа диалога или меток. Если полезной подсказки нет: —
+            """;
+    private static final String PREDICTIVE_V2_FORECAST_PROTOCOL = """
+            Ты — невидимый планировщик Prodamus Predictive 2. Твои ответы никогда напрямую не показываются менеджеру.
+            Ты получаешь весь разговор с метками [КЛИЕНТ] и [МЕНЕДЖЕР], включая последовательные части длинной реплики.
+
+            После каждого значимого изменения диалога построй ровно ТРИ взаимоисключающих и практически полезных
+            сценария того, что клиент вероятнее всего скажет дальше или как продолжит уже начатую реплику. Опирайся
+            на этап продажи, формулировки клиента, предыдущие вопросы и возражения, роль и базу знаний. Для каждого
+            сценария укажи короткие речевые признаки, по которым его можно распознать с первых слов, и одну готовую
+            реакцию менеджера. Сценарии должны различаться по намерению, а не быть перефразировками.
+
+            Строгий формат:
+            1 | НАМЕРЕНИЕ: <кратко> | ПРИЗНАКИ: <первые слова/смысл> | ОТВЕТ: <готовая фраза>
+            2 | НАМЕРЕНИЕ: <кратко> | ПРИЗНАКИ: <первые слова/смысл> | ОТВЕТ: <готовая фраза>
+            3 | НАМЕРЕНИЕ: <кратко> | ПРИЗНАКИ: <первые слова/смысл> | ОТВЕТ: <готовая фраза>
+
+            Не добавляй вступление, вывод, заголовок, вероятности или четвёртый вариант. Пиши по-русски и компактно.
+            """;
 
     private final LiveSessionRepository sessions;
     private final AiCredentialRepository credentials;
@@ -131,11 +168,30 @@ public class LiveSessionService {
     public PredictiveSessionBundle startPredictive(Long userId, String authenticatedDeviceId, Long promptProfileId,
                                                     String requestedDeviceId, String clientVersion,
                                                     String manualClientContext, boolean dualSession) {
+        List<String> protocols = dualSession
+                ? List.of(PREDICTIVE_TACTICAL_PROTOCOL, PREDICTIVE_FORECAST_PROTOCOL)
+                : List.of(PREDICTIVE_SINGLE_PROTOCOL);
+        return startPredictiveBundle(userId, authenticatedDeviceId, promptProfileId, requestedDeviceId,
+                clientVersion, manualClientContext, dualSession ? "DUAL" : "SINGLE", protocols);
+    }
+
+    public PredictiveSessionBundle startPredictiveV2(Long userId, String authenticatedDeviceId, Long promptProfileId,
+                                                      String requestedDeviceId, String clientVersion,
+                                                      String manualClientContext) {
+        return startPredictiveBundle(userId, authenticatedDeviceId, promptProfileId, requestedDeviceId,
+                clientVersion, manualClientContext, "PREDICTIVE_V2",
+                List.of(PREDICTIVE_V2_RECOMMENDER_PROTOCOL, PREDICTIVE_V2_FORECAST_PROTOCOL));
+    }
+
+    private PredictiveSessionBundle startPredictiveBundle(Long userId, String authenticatedDeviceId,
+                                                           Long promptProfileId, String requestedDeviceId,
+                                                           String clientVersion, String manualClientContext,
+                                                           String mode, List<String> protocols) {
         if (requestedDeviceId != null && !requestedDeviceId.isBlank()
                 && !authenticatedDeviceId.equals(requestedDeviceId.trim())) {
             throw ApiException.forbidden("deviceId не совпадает с авторизованным устройством.");
         }
-        int requiredCredentials = dualSession ? 2 : 1;
+        int requiredCredentials = protocols.size();
         PredictiveReservation reservation = transactions.execute(status -> reservePredictive(
                 userId, authenticatedDeviceId, promptProfileId, clientVersion, requiredCredentials));
         if (reservation == null) {
@@ -148,9 +204,7 @@ public class LiveSessionService {
             SystemConfig config = systemConfigService.get();
             for (int index = 0; index < reservation.sessions().size(); index++) {
                 Reservation current = reservation.sessions().get(index);
-                String protocol = dualSession
-                        ? (index == 0 ? PREDICTIVE_TACTICAL_PROTOCOL : PREDICTIVE_FORECAST_PROTOCOL)
-                        : PREDICTIVE_SINGLE_PROTOCOL;
+                String protocol = protocols.get(index);
                 String prompt = buildPrompt(config, current.prompt(), current.user(), manualClientContext, protocol);
                 GeminiTokenService.TokenResult token = gemini.createConstrainedToken(
                         credentialService.decrypt(current.credential()), current.prompt().getModel(), prompt);
@@ -158,8 +212,8 @@ public class LiveSessionService {
                 descriptors.add(new SessionDescriptor(current.sessionId(), token.ephemeralToken(), token.expiresAt(),
                         token.newSessionExpiresAt(), token.websocketUrl(), token.model()));
             }
-            return new PredictiveSessionBundle(dualSession ? "DUAL" : "SINGLE", descriptors.getFirst(),
-                    dualSession ? descriptors.get(1) : null);
+            return new PredictiveSessionBundle(mode, descriptors.getFirst(),
+                    descriptors.size() > 1 ? descriptors.get(1) : null);
         } catch (RuntimeException ex) {
             transactions.executeWithoutResult(status -> reservation.sessions().forEach(current ->
                     closeInternal(current.sessionId(), "PROVISIONING_ERROR", trim(ex.getMessage(), 480))));
