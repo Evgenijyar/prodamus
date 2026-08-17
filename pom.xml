@@ -13,9 +13,9 @@
 
     <groupId>ru.prodamus.client</groupId>
     <artifactId>prodamus-predictive2-client</artifactId>
-    <version>1.5.2-predictive.2</version>
+    <version>2.0.0</version>
     <name>Prodamus Predictive 2</name>
-    <description>Scenario-routed low-latency Windows AI sales assistant</description>
+    <description>Production low-latency Windows AI sales assistant</description>
 
     <properties>
         <java.version>21</java.version>

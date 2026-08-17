@@ -34,11 +34,13 @@ class ProgressiveUtteranceDetectorTest {
         ProgressiveUtteranceDetector detector = new ProgressiveUtteranceDetector(
                 SpeakerRole.CUSTOMER, 500, 300, 500, 2_000, segments::add);
 
-        for (int i = 0; i < 5; i++) detector.accept(pcm(4_000, 3_200));
+        for (int i = 0; i < 7; i++) detector.accept(pcm(4_000, 3_200));
         detector.accept(pcm(0, 9_600));
 
         assertThat(segments.getFirst().finalSegment()).isFalse();
         assertThat(segments.getLast().finalSegment()).isTrue();
+        assertThat(segments.getLast().audio()).isNotEmpty();
+        assertThat(segments).allMatch(value -> value.audio().length > 0);
     }
 
     @Test

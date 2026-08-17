@@ -27,7 +27,9 @@ final class SettingsDialog {
     private final ComboBox<AudioDevice> loopback = new ComboBox<>();
     private final Spinner<Integer> threshold = new Spinner<>(100, 5000, 550, 50);
     private final Spinner<Integer> silence = new Spinner<>(300, 2500, 700, 100);
+    private final CheckBox activeListening = new CheckBox("Реагировать, пока клиент продолжает говорить");
     private final Spinner<Integer> activeListeningInterval = new Spinner<>(1, 5, 2, 1);
+    private final CheckBox dualSession = new CheckBox("Использовать прогноз и два AI-ключа");
     private final Slider opacity = new Slider(0.65, 1.0, 0.96);
     private final Label deviceStatus = new Label("Загрузка аудиоустройств…");
     private final AppSettings original;
@@ -79,15 +81,18 @@ final class SettingsDialog {
         grid.add(new Label("Конец реплики, мс"), 0, row);
         grid.add(silence, 1, row++);
         grid.add(new Separator(), 0, row++, 2, 1);
+        grid.add(new Label("Активное слушание"), 0, row);
+        grid.add(activeListening, 1, row++);
         grid.add(new Label("Уточнение подсказки, сек"), 0, row);
         grid.add(activeListeningInterval, 1, row++);
         grid.add(new Separator(), 0, row++, 2, 1);
         grid.add(new Label("AI-схема"), 0, row);
-        grid.add(new Label("2 сессии: скрытый прогнозист + рекомендатель"), 1, row++);
+        grid.add(dualSession, 1, row++);
         grid.add(new Label("Прозрачность окна"), 0, row);
         grid.add(opacity, 1, row++);
 
-        Label note = new Label("Первая подсказка формируется примерно по первым 0,9 секунды речи клиента. Затем она уточняется в той же карточке через выбранный интервал. Скрытый прогнозист заранее строит три сценария и не выводит свои сообщения в интерфейс. Для запуска нужны два разных свободных AI-ключа.\n\nAI-ключи, модель, промпты и база знаний управляются централизованно на сервере.");
+        activeListeningInterval.disableProperty().bind(activeListening.selectedProperty().not());
+        Label note = new Label("В режиме двух ключей скрытый прогнозист заранее готовит три сценария, а рекомендатель показывает только одну лучшую фразу. В режиме одного ключа используется исходная совместимая схема Prodamus без прогнозиста.\n\nАктивное слушание даёт раннюю реакцию и уточняет её по мере продолжения длинной реплики. AI-ключи, модель, промпты и база знаний управляются централизованно на сервере.");
         note.setWrapText(true);
         note.getStyleClass().add("settings-note");
         grid.add(note, 0, row, 2, 1);
@@ -97,7 +102,9 @@ final class SettingsDialog {
     private void populate(AppSettings settings) {
         threshold.getValueFactory().setValue(settings.vadThreshold());
         silence.getValueFactory().setValue(settings.silenceMillis());
+        activeListening.setSelected(settings.activeListening());
         activeListeningInterval.getValueFactory().setValue(settings.activeListeningIntervalSeconds());
+        dualSession.setSelected(settings.dualSession());
         opacity.setValue(settings.overlayOpacity());
     }
 
@@ -137,8 +144,8 @@ final class SettingsDialog {
                 mic == null ? original.microphoneDeviceId() : mic.id(),
                 output == null ? original.loopbackDeviceId() : output.id(),
                 threshold.getValue(), silence.getValue(), original.excludeFromCapture(), opacity.getValue(),
-                original.expandedPreferred(), true, activeListeningInterval.getValue(),
-                true,
+                original.expandedPreferred(), activeListening.isSelected(), activeListeningInterval.getValue(),
+                dualSession.isSelected(),
                 original.lastRoleId());
     }
 }

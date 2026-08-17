@@ -18,27 +18,46 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Прямой клиент Gemini Live. Backend выдаёт ephemeral token перед стартом, после
- * чего аудио и reconnect идут напрямую между Windows-клиентом и Gemini.
+ * Direct, production-oriented Gemini Live WebSocket client.
+ * The Prodamus backend only provisions a constrained ephemeral token; audio
+ * and all subsequent reconnects travel directly between Windows and Gemini.
  */
 public final class GeminiLiveClient implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(GeminiLiveClient.class);
-    private static final int AUDIO_CHUNK_BYTES = 3_200;
+    /** Google recommends 20-40 ms PCM chunks for the Live API. */
+    static final int AUDIO_CHUNK_BYTES = 1_280;
+    private static final long OUTPUT_TRANSCRIPTION_GRACE_MS = 220;
+    private static final long TURN_RESPONSE_TIMEOUT_MS = 12_000;
+    private static final int MAX_TRANSIENT_SEND_ATTEMPTS = 2;
 
     private final ObjectMapper mapper;
     private final GeminiEventListener listener;
     private final HttpClient httpClient;
     private final ScheduledExecutorService reconnectExecutor = Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().name("gemini-direct-reconnect").daemon(true).factory());
+    private final ScheduledExecutorService eventScheduler = Executors.newSingleThreadScheduledExecutor(
+            Thread.ofPlatform().name("gemini-live-events").daemon(true).factory());
     private final AtomicBoolean desiredOpen = new AtomicBoolean();
     private final AtomicBoolean connected = new AtomicBoolean();
     private final AtomicBoolean reconnecting = new AtomicBoolean();
+    private final AtomicBoolean reconnectAfterTurn = new AtomicBoolean();
+    private final AtomicInteger orphanedTurnBoundaries = new AtomicInteger();
     private final AtomicLong successfulReconnects = new AtomicLong();
+    private final AtomicLong turnSequence = new AtomicLong();
     private final Object sendLock = new Object();
     private final Object turnLock = new Object();
     private final Object connectionLock = new Object();
@@ -66,6 +85,8 @@ public final class GeminiLiveClient implements AutoCloseable {
         }
         this.descriptor = descriptor;
         this.resumptionHandle = "";
+        orphanedTurnBoundaries.set(0);
+        reconnectAfterTurn.set(false);
         desiredOpen.set(true);
         connected.set(false);
         readyLatch = new CountDownLatch(1);
@@ -82,72 +103,73 @@ public final class GeminiLiveClient implements AutoCloseable {
         listener.onStatus("Слушаю звонок");
     }
 
-    public void sendUtterance(SpeakerRole role, byte[] pcm) {
-        sendUtterance(role, pcm, "");
-    }
-
-    public void sendUtterance(SpeakerRole role, byte[] pcm, String context) {
-        if (pcm == null || pcm.length == 0 || !desiredOpen.get()) return;
-        while (desiredOpen.get()) {
-            if (!awaitReady()) return;
-            WebSocket target = socket;
-            try {
-                sendUtterance(target, role, pcm, context);
-                return;
-            } catch (RuntimeException exception) {
-                if (!desiredOpen.get()) return;
-                log.warn("Direct Gemini send failed; reconnecting immediately: {}", rootMessage(exception));
-                connectionLost(target, "Ошибка отправки в Gemini Live", exception);
-            }
-        }
-    }
-
+    /**
+     * Sends one valid manual-VAD audio activity and waits until generation is
+     * complete. A true transport loss may retry once with the same idempotency
+     * metadata. Protocol failures and model timeouts are never blindly resent.
+     */
     public TurnResult sendUtteranceAndAwait(SpeakerRole role, byte[] pcm, String context) {
         byte[] audio = pcm == null ? new byte[0] : pcm;
-        if ((audio.length == 0 && (context == null || context.isBlank())) || !desiredOpen.get()) {
-            return TurnResult.failed("empty-or-closed");
-        }
+        if (audio.length == 0) return TurnResult.failed("empty-audio");
+        if (!desiredOpen.get()) return TurnResult.failed("closed");
+
         synchronized (turnLock) {
-            for (int attempt = 1; attempt <= 3 && desiredOpen.get(); attempt++) {
+            for (int attempt = 1; attempt <= MAX_TRANSIENT_SEND_ATTEMPTS && desiredOpen.get(); attempt++) {
                 if (!awaitReady()) return TurnResult.failed("closed");
-                TurnTracker tracker = new TurnTracker();
+                TurnTracker tracker = new TurnTracker(turnSequence.incrementAndGet(), turnLabel(context));
                 activeTurn = tracker;
                 discardCurrentSuggestion();
                 WebSocket target = socket;
                 try {
-                    sendUtterance(target, role, audio, context);
-                    if (!tracker.completion.await(20, TimeUnit.SECONDS)) {
-                        log.warn("Gemini turn did not reach turnComplete within 20 seconds; reconnecting (attempt={})",
-                                attempt);
-                        tracker.finish(TurnStatus.RETRY);
-                        connectionLost(target, "Таймаут ожидания turnComplete", null);
+                    sendAudioTurn(target, role, audio, context);
+                    if (!tracker.completion.await(TURN_RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                        String partial = discardCurrentSuggestion();
+                        if (tracker.finish(TurnStatus.TIMED_OUT, partial)) {
+                            // A later turnComplete belongs to this timed-out turn, not
+                            // to whichever request is active at that future moment.
+                            orphanedTurnBoundaries.incrementAndGet();
+                        }
+                        log.warn("Gemini turn timed out without reconnect: turn={}, label={}, generationComplete={}, "
+                                        + "outputChars={}",
+                                tracker.id, tracker.label, tracker.generationComplete,
+                                partial.length());
                     }
                 } catch (InterruptedException exception) {
                     Thread.currentThread().interrupt();
                     return TurnResult.failed("interrupted");
                 } catch (RuntimeException exception) {
                     if (!desiredOpen.get()) return TurnResult.failed("closed");
-                    log.warn("Direct Gemini turn failed; reconnecting (attempt={}): {}",
-                            attempt, rootMessage(exception));
-                    connectionLost(target, "Ошибка отправки в Gemini Live", exception);
-                    tracker.finish(TurnStatus.RETRY);
+                    log.warn("Direct Gemini send failed: turn={}, attempt={}, reason={}",
+                            tracker.id, attempt, rootMessage(exception));
+                    tracker.finish(TurnStatus.CONNECTION_LOST, "");
+                    connectionLost(target, "Ошибка отправки в Gemini Live", exception, FailureKind.TRANSIENT);
                 } finally {
                     if (activeTurn == tracker) activeTurn = null;
                 }
+
+                logTurnMetrics(tracker, attempt);
                 if (tracker.status == TurnStatus.COMPLETE) {
                     return new TurnResult(true, tracker.completedText, "complete");
                 }
-                log.info("Retrying Gemini turn after status={}, attempt={}", tracker.status, attempt);
+                if (tracker.status != TurnStatus.CONNECTION_LOST) {
+                    return new TurnResult(false, tracker.completedText, tracker.status.externalName);
+                }
+                if (attempt < MAX_TRANSIENT_SEND_ATTEMPTS) {
+                    log.info("Retrying transport-lost Gemini turn once: turn={}, label={}", tracker.id, tracker.label);
+                }
             }
-            return TurnResult.failed("retries-exhausted");
+            return TurnResult.failed("transport-retry-exhausted");
         }
     }
 
-    private void sendUtterance(WebSocket target, SpeakerRole role, byte[] pcm, String context) {
+    private void sendAudioTurn(WebSocket target, SpeakerRole role, byte[] pcm, String context) {
+        if (pcm == null || pcm.length == 0) {
+            throw new IllegalArgumentException("Manual VAD activity must contain non-empty audio");
+        }
         synchronized (sendLock) {
             requireCurrentConnection(target);
-            log.info("Sending complete utterance directly to Gemini: role={}, bytes={}, durationMs={}",
-                    role, pcm.length, pcm.length * 1000L / 32_000L);
+            log.info("Sending Gemini audio turn: role={}, bytes={}, durationMs={}, chunkMs=40, label={}",
+                    role, pcm.length, pcm.length * 1_000L / 32_000L, turnLabel(context));
             listener.onStatus("Распознана реплика: " + role.label().toLowerCase());
             sendJson(target, mapper.createObjectNode().set("realtimeInput",
                     mapper.createObjectNode().set("activityStart", mapper.createObjectNode())));
@@ -247,14 +269,24 @@ public final class GeminiLiveClient implements AutoCloseable {
 
     private JsonNode setupMessage(String model, String handle) {
         String normalized = model != null && model.startsWith("models/") ? model : "models/" + model;
+        ObjectNode generation = mapper.createObjectNode()
+                .set("responseModalities", mapper.createArrayNode().add("AUDIO"));
+        generation.put("temperature", 0.2);
+        generation.put("maxOutputTokens", 512);
+        generation.set("thinkingConfig", mapper.createObjectNode()
+                .put("thinkingLevel", "minimal")
+                .put("includeThoughts", false));
+
         ObjectNode setup = mapper.createObjectNode();
         setup.put("model", normalized);
-        setup.set("generationConfig", mapper.createObjectNode()
-                .set("responseModalities", mapper.createArrayNode().add("AUDIO")));
+        setup.set("generationConfig", generation);
         setup.set("inputAudioTranscription", mapper.createObjectNode());
         setup.set("outputAudioTranscription", mapper.createObjectNode());
         setup.set("realtimeInputConfig", mapper.createObjectNode()
                 .set("automaticActivityDetection", mapper.createObjectNode().put("disabled", true)));
+        ((ObjectNode) setup.get("realtimeInputConfig"))
+                .put("activityHandling", "NO_INTERRUPTION")
+                .put("turnCoverage", "TURN_INCLUDES_ONLY_ACTIVITY");
         setup.set("contextWindowCompression", mapper.createObjectNode()
                 .set("slidingWindow", mapper.createObjectNode()));
         ObjectNode resumption = mapper.createObjectNode();
@@ -263,17 +295,21 @@ public final class GeminiLiveClient implements AutoCloseable {
         return mapper.createObjectNode().set("setup", setup);
     }
 
-    private void connectionLost(WebSocket source, String reason, Throwable error) {
+    private void connectionLost(WebSocket source, String reason, Throwable error, FailureKind kind) {
         if (!desiredOpen.get() || source == null || source != socket) return;
         if (!connected.getAndSet(false) && reconnecting.get()) return;
+        reconnectAfterTurn.set(false);
+        orphanedTurnBoundaries.set(0);
         discardCurrentSuggestion();
-        finishActiveTurn(TurnStatus.RETRY, "");
+        finishActiveTurn(kind == FailureKind.PROTOCOL ? TurnStatus.PROTOCOL_ERROR : TurnStatus.CONNECTION_LOST, "");
         readyLatch = new CountDownLatch(1);
         if (!reconnecting.compareAndSet(false, true)) return;
 
-        listener.onStatus("Переподключение к Gemini…");
-        if (error == null) log.warn("Gemini connection lost: {}", reason);
-        else log.warn("Gemini connection lost: {}: {}", reason, rootMessage(error));
+        listener.onStatus(kind == FailureKind.PROTOCOL
+                ? "Восстанавливаю сессию после отклонённого turn…"
+                : "Переподключение к Gemini…");
+        if (error == null) log.warn("Gemini connection lost: kind={}, reason={}", kind, reason);
+        else log.warn("Gemini connection lost: kind={}, reason={}: {}", kind, reason, rootMessage(error));
         reconnectExecutor.execute(this::reconnectLoop);
     }
 
@@ -292,6 +328,9 @@ public final class GeminiLiveClient implements AutoCloseable {
             } catch (Throwable exception) {
                 connected.set(false);
                 log.warn("Gemini reconnect attempt {} failed: {}", attempt, rootMessage(exception));
+                if (attempt == 5) {
+                    listener.onStatus("Gemini временно недоступен · продолжаю переподключение…");
+                }
                 if (!desiredOpen.get()) break;
                 try {
                     Thread.sleep(reconnectDelayMillis(attempt));
@@ -335,7 +374,10 @@ public final class GeminiLiveClient implements AutoCloseable {
                 return;
             }
             if (root.has("error")) {
-                connectionLost(source, "Ошибка Gemini Live: " + root.path("error"), null);
+                JsonNode error = root.path("error");
+                String status = error.path("status").asText("");
+                FailureKind kind = isProtocolStatus(status) ? FailureKind.PROTOCOL : FailureKind.TRANSIENT;
+                connectionLost(source, "Ошибка Gemini Live: " + error, null, kind);
                 return;
             }
 
@@ -351,43 +393,102 @@ public final class GeminiLiveClient implements AutoCloseable {
 
             JsonNode goAway = root.path("goAway");
             if (!goAway.isMissingNode()) {
-                connectionLost(source, "Gemini GoAway, timeLeft=" + goAway.path("timeLeft").asText(""), null);
+                String timeLeft = goAway.path("timeLeft").asText("");
+                TurnTracker tracker = activeTurn;
+                if (tracker != null && tracker.status == TurnStatus.WAITING) {
+                    reconnectAfterTurn.set(true);
+                    log.info("Gemini GoAway deferred until active turn completes: turn={}, timeLeft={}",
+                            tracker.id, timeLeft);
+                } else {
+                    connectionLost(source, "Gemini GoAway, timeLeft=" + timeLeft, null, FailureKind.TRANSIENT);
+                }
                 return;
             }
 
             JsonNode content = root.path("serverContent");
             if (content.isMissingNode()) return;
+
+            boolean interrupted = content.path("interrupted").asBoolean(false);
+            boolean turnComplete = content.path("turnComplete").asBoolean(false);
+            // generationComplete-based logical completion may intentionally let
+            // Gemini's audio-playback boundary arrive later. Consume that event
+            // here so it can never complete or interrupt the next application turn.
+            if (orphanedTurnBoundaries.get() > 0) {
+                if (interrupted || turnComplete) {
+                    int remaining = orphanedTurnBoundaries.updateAndGet(value -> Math.max(0, value - 1));
+                    log.debug("Ignored late Gemini boundary from a logically completed turn: remaining={}", remaining);
+                }
+                return;
+            }
+
             String input = content.path("inputTranscription").path("text").asText("");
             if (!input.isBlank()) listener.onTranscript(input);
 
-            String output = content.path("outputTranscription").path("text").asText("");
+            String output = extractOutputText(content);
             if (!output.isBlank()) {
                 String current;
                 synchronized (suggestionLock) {
-                    suggestion.append(output);
+                    mergeTranscript(suggestion, output);
                     current = suggestion.toString().trim();
                 }
+                TurnTracker tracker = activeTurn;
+                if (tracker != null) tracker.markFirstOutput();
                 listener.onSuggestion(current, false);
             }
-            if (content.path("interrupted").asBoolean(false)) {
+
+            TurnTracker tracker = activeTurn;
+            if (interrupted) {
                 discardCurrentSuggestion();
-                TurnTracker tracker = activeTurn;
-                if (tracker != null) tracker.interrupted = true;
+                if (tracker != null) tracker.finish(TurnStatus.INTERRUPTED, "");
             }
-            if (content.path("turnComplete").asBoolean(false)) {
-                TurnTracker tracker = activeTurn;
-                // outputTranscription is an independent stream and may arrive just after turnComplete.
-                // A short grace period keeps the next turn serialized without losing the final words.
-                try {
-                    reconnectExecutor.schedule(() -> completeTurnAfterTranscription(tracker),
-                            180, TimeUnit.MILLISECONDS);
-                } catch (RejectedExecutionException ignored) {
-                    completeTurnAfterTranscription(tracker);
-                }
+
+            boolean generationComplete = content.path("generationComplete").asBoolean(false);
+            if (tracker != null && tracker.status == TurnStatus.WAITING) {
+                if (generationComplete) tracker.generationComplete = true;
+                if (turnComplete) tracker.turnComplete = true;
+                if (generationComplete || turnComplete) scheduleTurnCompletion(tracker);
             }
         } catch (Throwable exception) {
             log.error("Failed to process Gemini Live message", exception);
-            connectionLost(source, "Некорректный ответ Gemini Live", exception);
+            connectionLost(source, "Некорректный ответ Gemini Live", exception, FailureKind.PROTOCOL);
+        }
+    }
+
+    private String extractOutputText(JsonNode content) {
+        String transcription = content.path("outputTranscription").path("text").asText("");
+        if (!transcription.isBlank()) return transcription;
+        StringBuilder text = new StringBuilder();
+        JsonNode parts = content.path("modelTurn").path("parts");
+        if (parts.isArray()) {
+            for (JsonNode part : parts) {
+                if (part.path("thought").asBoolean(false)) continue;
+                String value = part.path("text").asText("");
+                if (!value.isBlank()) text.append(value);
+            }
+        }
+        return text.toString();
+    }
+
+    private void scheduleTurnCompletion(TurnTracker tracker) {
+        try {
+            eventScheduler.schedule(() -> completeTurnAfterTranscription(tracker),
+                    OUTPUT_TRANSCRIPTION_GRACE_MS, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException ignored) {
+            completeTurnAfterTranscription(tracker);
+        }
+    }
+
+    private void completeTurnAfterTranscription(TurnTracker tracker) {
+        if (tracker == null || tracker != activeTurn || tracker.status != TurnStatus.WAITING) return;
+        String completed = freezeCurrentSuggestion();
+        boolean realBoundarySeen = tracker.turnComplete;
+        if (tracker.finish(TurnStatus.COMPLETE, completed) && !realBoundarySeen) {
+            orphanedTurnBoundaries.incrementAndGet();
+        }
+        listener.onStatus("Слушаю звонок");
+        if (reconnectAfterTurn.compareAndSet(true, false)) {
+            WebSocket active = socket;
+            connectionLost(active, "Отложенный Gemini GoAway", null, FailureKind.TRANSIENT);
         }
     }
 
@@ -416,11 +517,15 @@ public final class GeminiLiveClient implements AutoCloseable {
         if (tracker != null) tracker.finish(status, completedText);
     }
 
-    private void completeTurnAfterTranscription(TurnTracker tracker) {
-        if (tracker == null || tracker != activeTurn || tracker.status != TurnStatus.WAITING) return;
-        String completed = tracker.interrupted ? discardCurrentSuggestion() : freezeCurrentSuggestion();
-        tracker.finish(tracker.interrupted ? TurnStatus.RETRY : TurnStatus.COMPLETE, completed);
-        listener.onStatus("Слушаю звонок");
+    private void logTurnMetrics(TurnTracker tracker, int attempt) {
+        long completedAt = tracker.completedNanos == 0 ? System.nanoTime() : tracker.completedNanos;
+        long totalMs = TimeUnit.NANOSECONDS.toMillis(completedAt - tracker.startedNanos);
+        long firstOutputMs = tracker.firstOutputNanos == 0 ? -1
+                : TimeUnit.NANOSECONDS.toMillis(tracker.firstOutputNanos - tracker.startedNanos);
+        log.info("Gemini turn result: turn={}, label={}, status={}, attempt={}, firstOutputMs={}, totalMs={}, "
+                        + "generationComplete={}, turnComplete={}, chars={}",
+                tracker.id, tracker.label, tracker.status, attempt, firstOutputMs, totalMs,
+                tracker.generationComplete, tracker.turnComplete, tracker.completedText.length());
     }
 
     @Override
@@ -428,9 +533,12 @@ public final class GeminiLiveClient implements AutoCloseable {
         boolean wasConnected = connected.getAndSet(false);
         desiredOpen.set(false);
         reconnecting.set(false);
+        reconnectAfterTurn.set(false);
+        orphanedTurnBoundaries.set(0);
         readyLatch.countDown();
         finishActiveTurn(TurnStatus.CLOSED, "");
         reconnectExecutor.shutdownNow();
+        eventScheduler.shutdownNow();
         WebSocket active = socket;
         socket = null;
         if (active != null) safeClose(active, "stop");
@@ -450,36 +558,58 @@ public final class GeminiLiveClient implements AutoCloseable {
         return !resumptionHandle.isBlank();
     }
 
-    public record TurnResult(boolean completed, String text, String status) {
-        public static TurnResult failed(String status) { return new TurnResult(false, "", status); }
-
-        public boolean hasSuggestion() {
-            return completed && text != null && !text.isBlank() && !text.trim().equals("—")
-                    && !text.trim().equals("-");
-        }
+    static CloseDisposition classifyClose(int statusCode) {
+        return switch (statusCode) {
+            case 1002, 1003, 1007, 1008, 1009, 1010 -> CloseDisposition.PROTOCOL;
+            default -> CloseDisposition.TRANSIENT;
+        };
     }
 
-    private enum TurnStatus { WAITING, COMPLETE, RETRY, CLOSED }
+    static String mergeTranscript(String current, String chunk) {
+        StringBuilder value = new StringBuilder(current == null ? "" : current);
+        mergeTranscript(value, chunk);
+        return value.toString();
+    }
 
-    private static final class TurnTracker {
-        private final CountDownLatch completion = new CountDownLatch(1);
-        private volatile TurnStatus status = TurnStatus.WAITING;
-        private volatile String completedText = "";
-        private volatile boolean interrupted;
-
-        private void finish(TurnStatus value) { finish(value, ""); }
-
-        private synchronized void finish(TurnStatus value, String text) {
-            if (status != TurnStatus.WAITING) return;
-            status = value;
-            completedText = text == null ? "" : text;
-            completion.countDown();
+    private static void mergeTranscript(StringBuilder target, String chunk) {
+        if (chunk == null || chunk.isEmpty()) return;
+        String current = target.toString();
+        if (current.equals(chunk) || current.endsWith(chunk)) return;
+        if (chunk.startsWith(current) && chunk.length() > current.length()) {
+            target.setLength(0);
+            target.append(chunk);
+            return;
         }
+        int max = Math.min(current.length(), chunk.length());
+        int overlap = 0;
+        for (int length = max; length > 0; length--) {
+            if (current.regionMatches(current.length() - length, chunk, 0, length)) {
+                overlap = length;
+                break;
+            }
+        }
+        target.append(chunk, overlap, chunk.length());
+    }
+
+    private boolean isProtocolStatus(String status) {
+        return "INVALID_ARGUMENT".equalsIgnoreCase(status)
+                || "FAILED_PRECONDITION".equalsIgnoreCase(status)
+                || "OUT_OF_RANGE".equalsIgnoreCase(status);
+    }
+
+    private String turnLabel(String context) {
+        if (context == null || context.isBlank()) return "unlabeled";
+        for (String line : context.split("\\R")) {
+            if (line.startsWith("phase=")) return line.substring("phase=".length()).trim();
+        }
+        return context.length() <= 32 ? context.replaceAll("\\s+", " ") : "custom";
     }
 
     private void safeClose(WebSocket webSocket, String reason) {
-        try { webSocket.sendClose(WebSocket.NORMAL_CLOSURE, reason); }
-        catch (RuntimeException ignored) { }
+        try {
+            webSocket.sendClose(WebSocket.NORMAL_CLOSURE, reason);
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private String buildUrl(String endpoint, String token) {
@@ -503,12 +633,72 @@ public final class GeminiLiveClient implements AutoCloseable {
         return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
     }
 
+    public record TurnResult(boolean completed, String text, String status) {
+        public static TurnResult failed(String status) {
+            return new TurnResult(false, "", status);
+        }
+
+        public boolean hasSuggestion() {
+            return completed && text != null && !text.isBlank() && !text.trim().equals("—")
+                    && !text.trim().equals("-");
+        }
+    }
+
+    enum CloseDisposition { TRANSIENT, PROTOCOL }
+
+    private enum FailureKind { TRANSIENT, PROTOCOL }
+
+    private enum TurnStatus {
+        WAITING("waiting"), COMPLETE("complete"), CONNECTION_LOST("connection-lost"),
+        PROTOCOL_ERROR("protocol-error"), TIMED_OUT("timeout"), INTERRUPTED("interrupted"), CLOSED("closed");
+
+        private final String externalName;
+
+        TurnStatus(String externalName) {
+            this.externalName = externalName;
+        }
+    }
+
+    private static final class TurnTracker {
+        private final long id;
+        private final String label;
+        private final long startedNanos = System.nanoTime();
+        private final CountDownLatch completion = new CountDownLatch(1);
+        private volatile TurnStatus status = TurnStatus.WAITING;
+        private volatile String completedText = "";
+        private volatile boolean generationComplete;
+        private volatile boolean turnComplete;
+        private volatile long firstOutputNanos;
+        private volatile long completedNanos;
+
+        private TurnTracker(long id, String label) {
+            this.id = id;
+            this.label = label;
+        }
+
+        private void markFirstOutput() {
+            if (firstOutputNanos == 0) firstOutputNanos = System.nanoTime();
+        }
+
+        private synchronized boolean finish(TurnStatus value, String text) {
+            if (status != TurnStatus.WAITING) return false;
+            status = value;
+            completedText = text == null ? "" : text;
+            completedNanos = System.nanoTime();
+            completion.countDown();
+            return true;
+        }
+    }
+
     private final class ConnectionListener implements WebSocket.Listener {
         private final CountDownLatch setupComplete = new CountDownLatch(1);
         private final StringBuilder responseBuffer = new StringBuilder();
         private final ByteArrayOutputStream binaryResponseBuffer = new ByteArrayOutputStream();
 
-        @Override public void onOpen(WebSocket webSocket) { webSocket.request(1); }
+        @Override
+        public void onOpen(WebSocket webSocket) {
+            webSocket.request(1);
+        }
 
         @Override
         public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
@@ -538,15 +728,18 @@ public final class GeminiLiveClient implements AutoCloseable {
 
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
-            log.info("Gemini WebSocket closed: statusCode={}, reason={}", statusCode, reason);
-            connectionLost(webSocket, "WebSocket закрыт: " + statusCode + " " + reason, null);
+            CloseDisposition disposition = classifyClose(statusCode);
+            log.info("Gemini WebSocket closed: statusCode={}, disposition={}, reason={}",
+                    statusCode, disposition, reason);
+            connectionLost(webSocket, "WebSocket закрыт: " + statusCode + " " + reason, null,
+                    disposition == CloseDisposition.PROTOCOL ? FailureKind.PROTOCOL : FailureKind.TRANSIENT);
             return CompletableFuture.completedFuture(null);
         }
 
         @Override
         public void onError(WebSocket webSocket, Throwable error) {
             log.warn("Gemini WebSocket error: {}", rootMessage(error));
-            connectionLost(webSocket, "Ошибка WebSocket", error);
+            connectionLost(webSocket, "Ошибка WebSocket", error, FailureKind.TRANSIENT);
         }
     }
 }

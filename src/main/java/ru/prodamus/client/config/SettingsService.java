@@ -28,9 +28,9 @@ public class SettingsService {
                 preferences.getBoolean("excludeFromCapture", defaults.excludeFromCapture()),
                 preferences.getDouble("overlayOpacity", defaults.overlayOpacity()),
                 preferences.getBoolean("expandedPreferred", defaults.expandedPreferred()),
-                true,
+                preferences.getBoolean("activeListening", defaults.activeListening()),
                 preferences.getInt("predictive2RefinementIntervalSeconds", defaults.activeListeningIntervalSeconds()),
-                true,
+                preferences.getBoolean("predictive2DualSession", defaults.dualSession()),
                 preferences.getLong("lastRoleId", defaults.lastRoleId())
         );
     }
@@ -43,7 +43,9 @@ public class SettingsService {
         preferences.putBoolean("excludeFromCapture", settings.excludeFromCapture());
         preferences.putDouble("overlayOpacity", settings.overlayOpacity());
         preferences.putBoolean("expandedPreferred", settings.expandedPreferred());
+        preferences.putBoolean("activeListening", settings.activeListening());
         preferences.putInt("predictive2RefinementIntervalSeconds", settings.activeListeningIntervalSeconds());
+        preferences.putBoolean("predictive2DualSession", settings.dualSession());
         preferences.putLong("lastRoleId", settings.lastRoleId());
     }
 

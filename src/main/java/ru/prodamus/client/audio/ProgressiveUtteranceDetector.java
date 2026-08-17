@@ -17,6 +17,12 @@ public final class ProgressiveUtteranceDetector {
     private static final int BYTES_PER_SECOND = 32_000;
     private static final int PRE_ROLL_BYTES = 6_400;
     private static final int MIN_SEGMENT_BYTES = 4_800;
+    /**
+     * Keep a short, never-yet-sent audio tail behind every progressive update.
+     * This guarantees that the real end-of-utterance signal always contains
+     * audio and can never become activityStart/activityEnd with an empty body.
+     */
+    private static final int FINAL_TAIL_BYTES = 3_840; // 120 ms, PCM16 mono 16 kHz
 
     private final SpeakerRole role;
     private final int threshold;
@@ -90,15 +96,12 @@ public final class ProgressiveUtteranceDetector {
 
     private void emitIfThresholdReached() {
         int target = segmentIndex == 0 ? firstSegmentBytes : continuationSegmentBytes;
-        if (segment.size() >= target) emit(false);
+        if (segment.size() >= target + FINAL_TAIL_BYTES) emitProgressive();
     }
 
     private void finish() {
-        if (segmentVoiceBytes > 0 && segment.size() >= MIN_SEGMENT_BYTES) {
+        if ((segmentVoiceBytes > 0 || segmentIndex > 0) && segment.size() >= MIN_SEGMENT_BYTES) {
             emit(true);
-        } else if (segmentIndex > 0) {
-            consumer.accept(new SpeechSegment(role, currentUtteranceId, segmentIndex, true,
-                    utteranceBytes, new byte[0]));
         }
         segment.reset();
         speaking = false;
@@ -106,6 +109,26 @@ public final class ProgressiveUtteranceDetector {
         segmentVoiceBytes = 0;
         utteranceBytes = 0;
         segmentIndex = 0;
+    }
+
+    private void emitProgressive() {
+        byte[] buffered = segment.toByteArray();
+        int emitLength = Math.max(MIN_SEGMENT_BYTES, buffered.length - FINAL_TAIL_BYTES);
+        if ((emitLength & 1) != 0) emitLength--;
+        byte[] audio = java.util.Arrays.copyOfRange(buffered, 0, emitLength);
+        byte[] tail = java.util.Arrays.copyOfRange(buffered, emitLength, buffered.length);
+        segment.reset();
+        segment.writeBytes(tail);
+        log.info("Progressive VAD segment: role={}, utterance={}, index={}, final=false, durationMs={}, heldBackMs={}",
+                role, currentUtteranceId, segmentIndex,
+                audio.length * 1000L / BYTES_PER_SECOND,
+                tail.length * 1000L / BYTES_PER_SECOND);
+        consumer.accept(new SpeechSegment(role, currentUtteranceId, segmentIndex, false,
+                utteranceBytes, audio));
+        segmentIndex++;
+        // The retained bytes came from the active speech window. Preserve that
+        // fact so a silence-only ending still emits a valid final audio turn.
+        segmentVoiceBytes = segmentVoiceBytes > 0 ? Math.min(segmentVoiceBytes, tail.length) : 0;
     }
 
     private void emit(boolean finalSegment) {
