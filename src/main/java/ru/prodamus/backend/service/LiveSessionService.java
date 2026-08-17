@@ -24,17 +24,14 @@ import java.util.UUID;
 public class LiveSessionService {
     private static final List<String> LEASED_STATUSES = List.of("PROVISIONING", "ACTIVE");
     private static final String CLIENT_DIALOG_PROTOCOL = """
-            Ты работаешь внутри Prodamus и получаешь один разговор из двух локальных аудиоисточников.
-            Перед каждым фрагментом клиентское приложение передаёт служебную текстовую метку [МЕНЕДЖЕР] или [КЛИЕНТ].
-
-            Правила выдачи подсказок обязательны и имеют приоритет над стилевыми пожеланиями роли:
-            - Реплика [МЕНЕДЖЕР] нужна только для понимания контекста разговора. После неё не давай менеджеру новую содержательную подсказку; ответь только символом «—».
-            - Реплика [КЛИЕНТ] является триггером подсказки. После неё дай ровно одну актуальную подсказку менеджеру: что лучше сказать или спросить дальше с учётом всего предыдущего разговора, роли и базы знаний.
-            - Не повторяй дословно реплику клиента и не пересказывай историю, если это не требуется для самой подсказки.
-            - Не выводи служебные метки [МЕНЕДЖЕР] и [КЛИЕНТ], не объясняй внутренний протокол и не обращайся к клиенту напрямую.
-            - Формулируй подсказку как готовую практическую рекомендацию менеджеру.
-            - Начинай с самого полезного действия или готовой фразы без вступления и без пересказа рассуждений.
-            - Отвечай кратко: обычно 1–3 предложения, чтобы первый полезный фрагмент появился максимально быстро.
+            Ты — незаметный ассистент менеджера по продажам во время живого звонка.
+            Ты получаешь по очереди реплики с метками [КЛИЕНТ] и [МЕНЕДЖЕР].
+            После реплики клиента дай менеджеру короткую, конкретную подсказку на русском языке:
+            что ответить прямо сейчас, какой задать вопрос или как обработать возражение.
+            После реплики менеджера оцени контекст, но отвечай только если есть действительно полезная следующая фраза.
+            Не пересказывай диалог, не здоровайся, не называй себя, не озвучивай служебные метки.
+            Пиши максимум 2–3 коротких предложения, готовых к произнесению.
+            Если подсказка не нужна, ответь одним символом: —
             """;
 
     private final LiveSessionRepository sessions;
@@ -78,7 +75,7 @@ public class LiveSessionService {
                     credentialService.decrypt(reservation.credential()), reservation.prompt().getModel(), prompt);
             transactions.executeWithoutResult(status -> activate(reservation.sessionId(), token.expiresAt()));
             return new SessionDescriptor(reservation.sessionId(), token.ephemeralToken(), token.expiresAt(),
-                    token.newSessionExpiresAt(), token.websocketUrl(), token.model(), Math.max(10, leaseTtl.toSeconds() / 3));
+                    token.newSessionExpiresAt(), token.websocketUrl(), token.model());
         } catch (RuntimeException ex) {
             transactions.executeWithoutResult(status -> closeInternal(reservation.sessionId(), "PROVISIONING_ERROR", trim(ex.getMessage(), 480)));
             throw ex;
@@ -93,8 +90,11 @@ public class LiveSessionService {
             throw ApiException.forbidden("Эта роль недоступна пользователю.");
         }
         Instant now = Instant.now();
-        if (sessions.countActiveForUser(userId, now) > 0) {
-            throw ApiException.conflict("USER_SESSION_ACTIVE", "У пользователя уже есть активный разговор. Сначала завершите текущую сессию.");
+        // Клиент больше не поддерживает серверную lease/heartbeat-сессию во время
+        // разговора. Новый запрос ключа заменяет предыдущую запись аудита, поэтому
+        // менеджер может сразу перезапустить локальный Gemini-клиент.
+        for (LiveSession existing : sessions.findByUser_IdAndStatusIn(userId, LEASED_STATUSES)) {
+            closeEntity(existing, "REPLACED", "Выдан новый временный ключ");
         }
         List<AiCredential> candidates = credentials.lockEnabledCredentials();
         AiCredential selected = null;
@@ -128,54 +128,6 @@ public class LiveSessionService {
         sessions.save(session);
     }
 
-    public SessionDescriptor renewToken(Long userId, String deviceId, UUID id, String manualClientContext) {
-        RenewalMaterial material = transactions.execute(status -> {
-            LiveSession session = requireOwnedDevice(userId, deviceId, id);
-            if (!LEASED_STATUSES.contains(session.getStatus())) {
-                throw ApiException.conflict("SESSION_CLOSED", "Live-сессия уже завершена.");
-            }
-            session.setLeaseExpiresAt(Instant.now().plus(leaseTtl));
-            sessions.save(session);
-            return new RenewalMaterial(session.getUser(), session.getPromptProfile(), session.getAiCredential());
-        });
-        if (material == null) throw ApiException.notFound("Live-сессия не найдена.");
-
-        SystemConfig config = systemConfigService.get();
-        String prompt = buildPrompt(config, material.prompt(), material.user(), manualClientContext);
-        GeminiTokenService.TokenResult token = gemini.createConstrainedToken(
-                credentialService.decrypt(material.credential()), material.prompt().getModel(), prompt);
-
-        transactions.executeWithoutResult(status -> {
-            LiveSession session = requireOwnedDevice(userId, deviceId, id);
-            if (!LEASED_STATUSES.contains(session.getStatus())) {
-                throw ApiException.conflict("SESSION_CLOSED", "Live-сессия уже завершена.");
-            }
-            session.setTokenExpiresAt(token.expiresAt());
-            session.setLeaseExpiresAt(Instant.now().plus(leaseTtl));
-            sessions.save(session);
-        });
-        return new SessionDescriptor(id, token.ephemeralToken(), token.expiresAt(), token.newSessionExpiresAt(),
-                token.websocketUrl(), token.model(), Math.max(10, leaseTtl.toSeconds() / 3));
-    }
-
-    public Lease heartbeat(Long userId, String deviceId, UUID id) {
-        return transactions.execute(status -> {
-            LiveSession session = requireOwnedDevice(userId, deviceId, id);
-            if (!LEASED_STATUSES.contains(session.getStatus())) throw ApiException.conflict("SESSION_CLOSED", "Live-сессия уже завершена.");
-            Instant lease = Instant.now().plus(leaseTtl);
-            session.setLeaseExpiresAt(lease);
-            sessions.save(session);
-            return new Lease(id, lease);
-        });
-    }
-
-    public void close(Long userId, String deviceId, UUID id, String reason) {
-        transactions.executeWithoutResult(status -> {
-            LiveSession session = requireOwnedDevice(userId, deviceId, id);
-            if (LEASED_STATUSES.contains(session.getStatus())) closeEntity(session, "CLOSED", trim(reason, 480));
-        });
-    }
-
     public void terminateByAdmin(UUID id) {
         transactions.executeWithoutResult(status -> closeInternal(id, "TERMINATED", "Завершено администратором"));
     }
@@ -196,18 +148,6 @@ public class LiveSessionService {
                 closeEntity(session, "EXPIRED", "Lease timeout");
             }
         });
-    }
-
-    private LiveSession requireOwned(Long userId, UUID id) {
-        return sessions.findByIdAndUser_Id(id, userId).orElseThrow(() -> ApiException.notFound("Live-сессия не найдена."));
-    }
-
-    private LiveSession requireOwnedDevice(Long userId, String deviceId, UUID id) {
-        LiveSession session = requireOwned(userId, id);
-        if (deviceId == null || !session.getDeviceId().equals(deviceId)) {
-            throw ApiException.forbidden("Live-сессия принадлежит другому устройству.");
-        }
-        return session;
     }
 
     private void closeInternal(UUID id, String status, String reason) {
@@ -242,8 +182,6 @@ public class LiveSessionService {
     private String trim(String value, int max) { if (value == null) return null; return value.length() <= max ? value : value.substring(0, max); }
 
     private record Reservation(UUID sessionId, AppUser user, PromptProfile prompt, AiCredential credential) {}
-    private record RenewalMaterial(AppUser user, PromptProfile prompt, AiCredential credential) {}
     public record SessionDescriptor(UUID sessionId, String ephemeralToken, Instant tokenExpiresAt,
-                                    Instant newSessionExpiresAt, String websocketUrl, String model, long heartbeatEverySeconds) {}
-    public record Lease(UUID sessionId, Instant leaseExpiresAt) {}
+                                    Instant newSessionExpiresAt, String websocketUrl, String model) {}
 }

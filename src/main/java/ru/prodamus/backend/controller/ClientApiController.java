@@ -9,9 +9,6 @@ import ru.prodamus.backend.service.ClientAuthService;
 import ru.prodamus.backend.service.ClientBootstrapService;
 import ru.prodamus.backend.service.LiveSessionService;
 
-import java.util.Map;
-import java.util.UUID;
-
 @RestController
 @RequestMapping("/api/client")
 public class ClientApiController {
@@ -41,30 +38,6 @@ public class ClientApiController {
                 body.clientVersion(), body.clientContext());
     }
 
-
-    @PostMapping("/live-sessions/{id}/token")
-    public LiveSessionService.SessionDescriptor renewToken(@PathVariable UUID id,
-                                                            @RequestBody(required = false) RenewTokenRequest body,
-                                                            HttpServletRequest request) {
-        ClientAuthService.AuthenticatedClient client = client(request);
-        return liveSessions.renewToken(client.userId(), client.deviceId(), id, body == null ? null : body.clientContext());
-    }
-
-    @PostMapping("/live-sessions/{id}/heartbeat")
-    public LiveSessionService.Lease heartbeat(@PathVariable UUID id, HttpServletRequest request) {
-        ClientAuthService.AuthenticatedClient client = client(request);
-        return liveSessions.heartbeat(client.userId(), client.deviceId(), id);
-    }
-
-    @DeleteMapping("/live-sessions/{id}")
-    public Map<String, Object> close(@PathVariable UUID id,
-                                     @RequestParam(value = "reason", required = false) String reason,
-                                     HttpServletRequest request) {
-        ClientAuthService.AuthenticatedClient client = client(request);
-        liveSessions.close(client.userId(), client.deviceId(), id, reason == null ? "Client stop" : reason);
-        return Map.of("ok", true);
-    }
-
     private ClientAuthService.AuthenticatedClient client(HttpServletRequest request) {
         Object value = request.getAttribute(ClientAuthInterceptor.CLIENT);
         if (value instanceof ClientAuthService.AuthenticatedClient client) return client;
@@ -73,5 +46,4 @@ public class ClientApiController {
 
     public record StartSessionRequest(@NotNull(message = "Выберите роль.") Long promptProfileId,
                                       String deviceId, String clientVersion, String clientContext) {}
-    public record RenewTokenRequest(String clientContext) {}
 }

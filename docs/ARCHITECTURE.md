@@ -7,7 +7,9 @@ The backend is the control plane. It does not proxy realtime call audio.
 - **Windows client**: captures local microphone + Windows loopback, renders overlay, connects directly to Gemini Live.
 - **Prodamus Backend**: authenticates users/devices, serves bootstrap/configuration, manages prompt profiles, encrypts permanent AI credentials, allocates Live-session capacity and mints constrained ephemeral tokens.
 - **PostgreSQL**: users, password hashes, token hashes, roles, encrypted AI credentials, technical session metadata and audit events.
-- **Gemini Live**: realtime audio processing over a direct client-to-Gemini WebSocket. The client streams PCM chunks while the speaker is still talking and renders input/output transcription incrementally.
+- **Gemini Live**: realtime audio processing over a direct client-to-Gemini WebSocket. The client uses the same buffered-utterance/VAD flow as the original Sales Helper.
+
+Once the backend has returned the constrained ephemeral token, it is not on the active-conversation path. The client sends no heartbeat, renew, audio, transcript, history or close request during that conversation.
 
 ## Security model
 
@@ -23,14 +25,14 @@ The backend is the control plane. It does not proxy realtime call audio.
 
 A START request is handled transactionally:
 
-1. Lock the user row; reject a second simultaneous conversation for the same user.
+1. Lock the user row and close any older audit reservation for that user.
 2. Validate that the requested prompt profile is assigned and enabled.
 3. Pessimistically lock enabled AI credentials.
 4. Select the first credential whose active leased-session count is below capacity.
 5. Create a `PROVISIONING` lease.
 6. Mint the constrained ephemeral token outside the reservation transaction.
-7. Mark the session `ACTIVE` and refresh the lease by heartbeat.
-8. A scheduler expires abandoned leases automatically.
+7. Mark the issuance record `ACTIVE`; no client heartbeat is required.
+8. A scheduler expires the short reservation automatically.
 
 This avoids oversubscribing the key pool when multiple managers press START concurrently.
 
