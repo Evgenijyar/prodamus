@@ -77,7 +77,7 @@ def run(*args: str, check: bool = True, quiet: bool = False) -> subprocess.Compl
 
 def exists_container(name: str) -> bool:
     return subprocess.run(
-        ["docker", "inspect", name],
+        ["docker", "container", "inspect", name],
         cwd=ROOT,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
