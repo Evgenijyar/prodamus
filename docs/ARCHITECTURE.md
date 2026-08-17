@@ -9,7 +9,7 @@ The backend is the control plane. It does not proxy realtime call audio.
 - **PostgreSQL**: users, password hashes, token hashes, roles, encrypted AI credentials, technical session metadata and audit events.
 - **Gemini Live**: realtime audio processing over a direct client-to-Gemini WebSocket. The client uses the same buffered-utterance/VAD flow as the original Sales Helper, with optional contiguous active-listening segments for long customer speech.
 
-Once the backend has returned the constrained ephemeral token, it is not on the active-conversation path. The client sends no heartbeat, renew, audio, transcript, history or close request during that conversation.
+Once the backend has returned the constrained ephemeral token, it is not on the active-conversation path. The client sends no heartbeat, renew, audio, transcript, history or close request during that conversation. Unexpected direct WebSocket failures are recovered client-side with Gemini session resumption and the latest handle.
 
 ## Security model
 

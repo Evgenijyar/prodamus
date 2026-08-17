@@ -27,7 +27,7 @@ public class GeminiTokenService {
     public GeminiTokenService(RestClient.Builder builder,
                               @Value("${prodamus.gemini.auth-token-url}") String tokenUrl,
                               @Value("${prodamus.gemini.websocket-url}") String websocketUrl,
-                              @Value("${prodamus.gemini.token-expire-minutes:60}") long tokenExpireMinutes,
+                              @Value("${prodamus.gemini.token-expire-minutes:240}") long tokenExpireMinutes,
                               @Value("${prodamus.gemini.new-session-expire-seconds:60}") long newSessionExpireSeconds,
                               @Value("${prodamus.gemini.http-timeout-seconds:15}") long httpTimeoutSeconds) {
         Duration timeout = Duration.ofSeconds(Math.max(3, httpTimeoutSeconds));
