@@ -1,0 +1,8 @@
+target/
+dist/
+.idea/
+*.iml
+*.log
+logs/
+hs_err_pid*
+.prodamus/
