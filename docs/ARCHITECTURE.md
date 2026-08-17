@@ -7,7 +7,7 @@ The backend is the control plane. It does not proxy realtime call audio.
 - **Windows client**: captures local microphone + Windows loopback, renders overlay, connects directly to Gemini Live.
 - **Prodamus Backend**: authenticates users/devices, serves bootstrap/configuration, manages prompt profiles, encrypts permanent AI credentials, allocates Live-session capacity and mints constrained ephemeral tokens.
 - **PostgreSQL**: users, password hashes, token hashes, roles, encrypted AI credentials, technical session metadata and audit events.
-- **Gemini Live**: realtime audio processing over a direct client-to-Gemini WebSocket.
+- **Gemini Live**: realtime audio processing over a direct client-to-Gemini WebSocket. The client streams PCM chunks while the speaker is still talking and renders input/output transcription incrementally.
 
 ## Security model
 

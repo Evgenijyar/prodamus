@@ -49,7 +49,10 @@ public class GeminiTokenService {
 
         Map<String, Object> setup = new LinkedHashMap<>();
         setup.put("model", model.startsWith("models/") ? model : "models/" + model);
-        setup.put("generationConfig", Map.of("responseModalities", List.of("AUDIO")));
+        setup.put("generationConfig", Map.of(
+                "responseModalities", List.of("AUDIO"),
+                "thinkingConfig", Map.of("thinkingLevel", "MINIMAL")
+        ));
         setup.put("inputAudioTranscription", Map.of());
         setup.put("outputAudioTranscription", Map.of());
         setup.put("realtimeInputConfig", Map.of("automaticActivityDetection", Map.of("disabled", true)));
