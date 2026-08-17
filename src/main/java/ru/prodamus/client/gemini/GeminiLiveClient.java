@@ -166,7 +166,15 @@ public final class GeminiLiveClient implements AutoCloseable {
                 suggestion.append(output);
                 listener.onSuggestion(suggestion.toString().trim(), false);
             }
-            if (content.path("interrupted").asBoolean(false)) suggestion.setLength(0);
+            if (content.path("interrupted").asBoolean(false)) {
+                String interrupted = suggestion.toString().trim();
+                if (!interrupted.isBlank() && !interrupted.equals("—") && !interrupted.equals("-")) {
+                    // Активное слушание может прервать генерацию следующим аудиофрагментом.
+                    // Уже показанный текст фиксируется отдельной подсказкой и не затирается.
+                    listener.onSuggestion(interrupted, true);
+                }
+                suggestion.setLength(0);
+            }
             if (content.path("turnComplete").asBoolean(false)) {
                 String complete = suggestion.toString().trim();
                 if (!complete.isBlank() && !complete.equals("—") && !complete.equals("-")) {

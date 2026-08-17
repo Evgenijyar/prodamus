@@ -27,6 +27,8 @@ final class SettingsDialog {
     private final ComboBox<AudioDevice> loopback = new ComboBox<>();
     private final Spinner<Integer> threshold = new Spinner<>(100, 5000, 550, 50);
     private final Spinner<Integer> silence = new Spinner<>(300, 2500, 700, 100);
+    private final CheckBox activeListening = new CheckBox("Реагировать, пока клиент продолжает говорить");
+    private final Spinner<Integer> activeListeningInterval = new Spinner<>(2, 15, 3, 1);
     private final Slider opacity = new Slider(0.65, 1.0, 0.96);
     private final Label deviceStatus = new Label("Загрузка аудиоустройств…");
     private final AppSettings original;
@@ -42,7 +44,7 @@ final class SettingsDialog {
         dialog.setHeaderText("Звук и отображение");
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.CANCEL,
                 new ButtonType("Сохранить", ButtonBar.ButtonData.OK_DONE));
-        dialog.getDialogPane().setPrefSize(650, 430);
+        dialog.getDialogPane().setPrefSize(680, 520);
         dialog.getDialogPane().setContent(buildContent());
         populate(settings);
         loadDevices();
@@ -77,10 +79,16 @@ final class SettingsDialog {
         grid.add(threshold, 1, row++);
         grid.add(new Label("Конец реплики, мс"), 0, row);
         grid.add(silence, 1, row++);
+        grid.add(new Separator(), 0, row++, 2, 1);
+        grid.add(new Label("Активное слушание"), 0, row);
+        grid.add(activeListening, 1, row++);
+        grid.add(new Label("Интервал реакции, сек"), 0, row);
+        grid.add(activeListeningInterval, 1, row++);
         grid.add(new Label("Прозрачность окна"), 0, row);
         grid.add(opacity, 1, row++);
 
-        Label note = new Label("AI-ключи, модель, промпты и база знаний управляются централизованно на сервере и не отображаются в Windows-клиенте.");
+        activeListeningInterval.disableProperty().bind(activeListening.selectedProperty().not());
+        Label note = new Label("Активное слушание делит только длинную речь клиента на последовательные отрезки без потери звука. Каждый отрезок вызывает новую подсказку, а Gemini сохраняет общий контекст разговора.\n\nAI-ключи, модель, промпты и база знаний управляются централизованно на сервере.");
         note.setWrapText(true);
         note.getStyleClass().add("settings-note");
         grid.add(note, 0, row, 2, 1);
@@ -90,6 +98,8 @@ final class SettingsDialog {
     private void populate(AppSettings settings) {
         threshold.getValueFactory().setValue(settings.vadThreshold());
         silence.getValueFactory().setValue(settings.silenceMillis());
+        activeListening.setSelected(settings.activeListening());
+        activeListeningInterval.getValueFactory().setValue(settings.activeListeningIntervalSeconds());
         opacity.setValue(settings.overlayOpacity());
     }
 
@@ -129,6 +139,7 @@ final class SettingsDialog {
                 mic == null ? original.microphoneDeviceId() : mic.id(),
                 output == null ? original.loopbackDeviceId() : output.id(),
                 threshold.getValue(), silence.getValue(), original.excludeFromCapture(), opacity.getValue(),
-                original.expandedPreferred(), original.lastRoleId());
+                original.expandedPreferred(), activeListening.isSelected(), activeListeningInterval.getValue(),
+                original.lastRoleId());
     }
 }

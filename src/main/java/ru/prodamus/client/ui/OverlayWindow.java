@@ -3,10 +3,12 @@ package ru.prodamus.client.ui;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.Cursor;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
+import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
@@ -36,9 +38,10 @@ import java.util.concurrent.Executor;
 public class OverlayWindow implements AssistantListener {
     private static final Logger log = LoggerFactory.getLogger(OverlayWindow.class);
     private static final String TITLE = "Prodamus — " + ProcessHandle.current().pid();
-    private static final double WINDOW_W = 590;
-    private static final double WINDOW_H = 430;
-    private static final double SUGGESTION_HEIGHT = 128;
+    private static final double WINDOW_W = 700;
+    private static final double WINDOW_H = 620;
+    private static final double MIN_WINDOW_W = 520;
+    private static final double MIN_WINDOW_H = 400;
 
     private final AssistantCoordinator coordinator;
     private final BackendClient backend;
@@ -49,8 +52,10 @@ public class OverlayWindow implements AssistantListener {
 
     private final Label status = new Label("Подключение…");
     private final Label statusDot = new Label("●");
-    private final Label suggestion = new Label("Готовлю рабочее пространство…");
-    private final Label transcript = new Label("");
+    private final VBox suggestionsBox = new VBox(12);
+    private final ScrollPane suggestionsScroll = new ScrollPane(suggestionsBox);
+    private final Label emptySuggestions = new Label("Подсказки появятся здесь после начала разговора.");
+    private final Button jumpLatest = new Button("↓  К последней подсказке");
     private final Button startStop = new Button("▶  Старт");
     private final ComboBox<Role> roleBox = new ComboBox<>();
     private final TextArea clientContext = new TextArea();
@@ -64,8 +69,18 @@ public class OverlayWindow implements AssistantListener {
     private AppSettings settings;
     private Bootstrap bootstrap;
     private boolean roleListenerInstalled;
+    private boolean scrollListenerInstalled;
+    private boolean autoFollow = true;
+    private Label liveSuggestion;
     private double dragX;
     private double dragY;
+    private ResizeEdge activeResizeEdge = ResizeEdge.NONE;
+    private double resizeStartScreenX;
+    private double resizeStartScreenY;
+    private double resizeStartX;
+    private double resizeStartY;
+    private double resizeStartWidth;
+    private double resizeStartHeight;
 
     public OverlayWindow(AssistantCoordinator coordinator, BackendClient backend, SettingsService settingsService,
                          WindowsAudioService audioService, WindowsPrivacyService privacyService,
@@ -195,6 +210,8 @@ public class OverlayWindow implements AssistantListener {
 
         stage.setScene(scene(root, 470, 610));
         stage.setResizable(false);
+        stage.setMinWidth(0);
+        stage.setMinHeight(0);
         stage.setOpacity(1.0);
         centerStage(470, 610);
         Platform.runLater(() -> { if (!restoring) (login.getText().isBlank() ? login : password).requestFocus(); });
@@ -226,9 +243,11 @@ public class OverlayWindow implements AssistantListener {
     private void openWorkspace(Bootstrap bootstrap) {
         this.bootstrap = bootstrap;
         this.settings = settingsService.load();
-        this.transcript.setText("");
+        clearSuggestions();
         stage.setScene(scene(buildWorkspace(), WINDOW_W, WINDOW_H));
-        stage.setResizable(false);
+        stage.setResizable(true);
+        stage.setMinWidth(MIN_WINDOW_W);
+        stage.setMinHeight(MIN_WINDOW_H);
         stage.setOpacity(settings.overlayOpacity());
         configureWorkspaceData();
         stage.setWidth(WINDOW_W);
@@ -262,7 +281,7 @@ public class OverlayWindow implements AssistantListener {
         captureCheck.setOnAction(e -> {
             settings = new AppSettings(settings.microphoneDeviceId(), settings.loopbackDeviceId(), settings.vadThreshold(),
                     settings.silenceMillis(), captureCheck.isSelected(), settings.overlayOpacity(), false,
-                    settings.lastRoleId());
+                    settings.activeListening(), settings.activeListeningIntervalSeconds(), settings.lastRoleId());
             settingsService.save(settings);
             applyCaptureProtection();
         });
@@ -282,7 +301,8 @@ public class OverlayWindow implements AssistantListener {
                         ? null : new Tooltip(value.description()));
                 settings = new AppSettings(settings.microphoneDeviceId(), settings.loopbackDeviceId(),
                         settings.vadThreshold(), settings.silenceMillis(), settings.excludeFromCapture(),
-                        settings.overlayOpacity(), false, value.id());
+                        settings.overlayOpacity(), false, settings.activeListening(),
+                        settings.activeListeningIntervalSeconds(), value.id());
                 settingsService.save(settings);
             });
             roleListenerInstalled = true;
@@ -294,18 +314,41 @@ public class OverlayWindow implements AssistantListener {
         clientContext.setMaxHeight(58);
         clientContext.getStyleClass().setAll("client-context");
 
-        suggestion.setWrapText(true);
-        suggestion.setMaxWidth(Double.MAX_VALUE);
-        suggestion.setMinHeight(SUGGESTION_HEIGHT);
-        suggestion.setPrefHeight(SUGGESTION_HEIGHT);
-        suggestion.setMaxHeight(SUGGESTION_HEIGHT);
-        suggestion.setAlignment(Pos.TOP_LEFT);
-        suggestion.getStyleClass().setAll("suggestion");
+        suggestionsBox.setFillWidth(true);
+        suggestionsBox.getStyleClass().setAll("suggestions-box");
+        emptySuggestions.setWrapText(true);
+        emptySuggestions.setMaxWidth(Double.MAX_VALUE);
+        emptySuggestions.setAlignment(Pos.CENTER);
+        emptySuggestions.getStyleClass().setAll("suggestions-empty");
+        if (suggestionsBox.getChildren().isEmpty()) suggestionsBox.getChildren().add(emptySuggestions);
 
-        transcript.setWrapText(true);
-        transcript.setMaxWidth(Double.MAX_VALUE);
-        transcript.setMinHeight(26);
-        transcript.getStyleClass().setAll("transcript");
+        suggestionsScroll.setFitToWidth(true);
+        suggestionsScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        suggestionsScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        suggestionsScroll.getStyleClass().setAll("suggestions-scroll");
+        if (!scrollListenerInstalled) {
+            suggestionsScroll.vvalueProperty().addListener((obs, old, value) -> {
+                autoFollow = value.doubleValue() >= 0.985;
+                jumpLatest.setVisible(!autoFollow);
+                jumpLatest.setManaged(!autoFollow);
+            });
+            scrollListenerInstalled = true;
+        }
+
+        jumpLatest.getStyleClass().setAll("jump-latest");
+        jumpLatest.setVisible(false);
+        jumpLatest.setManaged(false);
+        jumpLatest.setOnAction(e -> {
+            autoFollow = true;
+            jumpLatest.setVisible(false);
+            jumpLatest.setManaged(false);
+            suggestionsScroll.setVvalue(1.0);
+        });
+        StackPane suggestionsStack = new StackPane(suggestionsScroll, jumpLatest);
+        StackPane.setAlignment(jumpLatest, Pos.BOTTOM_RIGHT);
+        StackPane.setMargin(jumpLatest, new Insets(0, 16, 14, 0));
+        suggestionsStack.getStyleClass().add("suggestions-stack");
+        VBox.setVgrow(suggestionsStack, Priority.ALWAYS);
 
         updateBanner.getStyleClass().setAll("update-banner");
         updateText.setWrapText(true);
@@ -319,21 +362,19 @@ public class OverlayWindow implements AssistantListener {
         startStop.setOnAction(e -> toggleRunning());
         Button clear = new Button("Очистить");
         clear.getStyleClass().add("secondary-button");
-        clear.setOnAction(e -> {
-            suggestion.setText(coordinator.isRunning() ? "Слушаю разговор…" : "Готов к новому разговору.");
-            transcript.setText("");
-        });
+        clear.setOnAction(e -> clearSuggestions());
         Region footerSpacer = new Region();
         HBox.setHgrow(footerSpacer, Priority.ALWAYS);
-        Label hint = new Label("Окно можно перетаскивать за верхнюю панель");
+        Label hint = new Label("Окно можно растягивать за края");
         hint.getStyleClass().add("hint");
         HBox controls = new HBox(9, startStop, clear, footerSpacer, hint);
         controls.setAlignment(Pos.CENTER_LEFT);
         controls.getStyleClass().add("controls-row");
 
-        VBox root = new VBox(9, header, updateBanner, roleBox, clientContext, suggestion, transcript, controls);
+        VBox root = new VBox(9, header, updateBanner, roleBox, clientContext, suggestionsStack, controls);
         root.setPadding(new Insets(10));
         root.getStyleClass().add("overlay");
+        installResizeSupport(root);
         return root;
     }
 
@@ -364,10 +405,10 @@ public class OverlayWindow implements AssistantListener {
         updateLink.setManaged(hasDownload);
 
         if (roles.isEmpty()) {
-            suggestion.setText("Администратор ещё не назначил вам ни одной роли продаж.");
+            setEmptySuggestionsText("Администратор ещё не назначил вам ни одной роли продаж.");
             startStop.setDisable(true);
         } else {
-            suggestion.setText("Выберите роль и нажмите «Старт».");
+            setEmptySuggestionsText("Подсказки появятся здесь после начала разговора.");
             startStop.setDisable(bootstrap.version().updateRequired());
         }
         setStatus("Готов");
@@ -392,7 +433,6 @@ public class OverlayWindow implements AssistantListener {
             openUpdateUrl();
             return;
         }
-        transcript.setText("");
         coordinator.start(settings, role.id(), clientContext.getText(), this);
     }
 
@@ -405,7 +445,8 @@ public class OverlayWindow implements AssistantListener {
         new SettingsDialog(stage, settings, audioService).showAndWait().ifPresent(updated -> {
             settings = new AppSettings(updated.microphoneDeviceId(), updated.loopbackDeviceId(),
                     updated.vadThreshold(), updated.silenceMillis(), updated.excludeFromCapture(),
-                    updated.overlayOpacity(), false, updated.lastRoleId());
+                    updated.overlayOpacity(), false, updated.activeListening(),
+                    updated.activeListeningIntervalSeconds(), updated.lastRoleId());
             settingsService.save(settings);
             stage.setOpacity(settings.overlayOpacity());
             captureCheck.setSelected(settings.excludeFromCapture());
@@ -421,6 +462,164 @@ public class OverlayWindow implements AssistantListener {
             backend.logout();
             Platform.runLater(() -> showLogin(false));
         });
+    }
+
+    private void clearSuggestions() {
+        liveSuggestion = null;
+        suggestionsBox.getChildren().setAll(emptySuggestions);
+        emptySuggestions.setVisible(true);
+        emptySuggestions.setManaged(true);
+        autoFollow = true;
+        jumpLatest.setVisible(false);
+        jumpLatest.setManaged(false);
+        Platform.runLater(() -> suggestionsScroll.setVvalue(1.0));
+    }
+
+    private void setEmptySuggestionsText(String text) {
+        emptySuggestions.setText(text == null ? "" : text);
+        if (suggestionsBox.getChildren().size() == 1
+                && suggestionsBox.getChildren().getFirst() == emptySuggestions) {
+            emptySuggestions.setVisible(true);
+            emptySuggestions.setManaged(true);
+        }
+    }
+
+    private Label addSuggestionCard(String text) {
+        if (suggestionsBox.getChildren().contains(emptySuggestions)) {
+            suggestionsBox.getChildren().remove(emptySuggestions);
+        }
+        Label body = new Label(text.trim());
+        body.setWrapText(true);
+        body.setMaxWidth(Double.MAX_VALUE);
+        body.getStyleClass().add("suggestion-message");
+
+        VBox card = new VBox(body);
+        card.setMaxWidth(Double.MAX_VALUE);
+        card.getStyleClass().add("suggestion-card");
+        if (!suggestionsBox.getChildren().isEmpty()) {
+            Separator separator = new Separator();
+            separator.getStyleClass().add("suggestion-divider");
+            suggestionsBox.getChildren().add(separator);
+        }
+        suggestionsBox.getChildren().add(card);
+        followSuggestions();
+        return body;
+    }
+
+    private void updateSuggestion(String text, boolean complete) {
+        if (text == null || text.isBlank()) return;
+        String value = text.trim();
+        if ("—".equals(value) || "-".equals(value)) {
+            if (complete) liveSuggestion = null;
+            return;
+        }
+        if (liveSuggestion == null) {
+            liveSuggestion = addSuggestionCard(value);
+        } else {
+            liveSuggestion.setText(value);
+            followSuggestions();
+        }
+        if (complete) liveSuggestion = null;
+    }
+
+    private void followSuggestions() {
+        if (!autoFollow) return;
+        Platform.runLater(() -> suggestionsScroll.setVvalue(1.0));
+    }
+
+    private void installResizeSupport(Region root) {
+        final double edge = 9.0;
+        root.addEventFilter(MouseEvent.MOUSE_MOVED, event -> {
+            if (activeResizeEdge != ResizeEdge.NONE) return;
+            stage.getScene().setCursor(cursorFor(detectResizeEdge(event.getSceneX(), event.getSceneY(), edge)));
+        });
+        root.addEventFilter(MouseEvent.MOUSE_PRESSED, event -> {
+            if (event.getButton() != MouseButton.PRIMARY) return;
+            ResizeEdge detected = detectResizeEdge(event.getSceneX(), event.getSceneY(), edge);
+            if (detected == ResizeEdge.NONE) return;
+            activeResizeEdge = detected;
+            resizeStartScreenX = event.getScreenX();
+            resizeStartScreenY = event.getScreenY();
+            resizeStartX = stage.getX();
+            resizeStartY = stage.getY();
+            resizeStartWidth = stage.getWidth();
+            resizeStartHeight = stage.getHeight();
+            event.consume();
+        });
+        root.addEventFilter(MouseEvent.MOUSE_DRAGGED, event -> {
+            if (activeResizeEdge == ResizeEdge.NONE) return;
+            double dx = event.getScreenX() - resizeStartScreenX;
+            double dy = event.getScreenY() - resizeStartScreenY;
+            if (activeResizeEdge.right) stage.setWidth(Math.max(MIN_WINDOW_W, resizeStartWidth + dx));
+            if (activeResizeEdge.bottom) stage.setHeight(Math.max(MIN_WINDOW_H, resizeStartHeight + dy));
+            if (activeResizeEdge.left) {
+                double width = Math.max(MIN_WINDOW_W, resizeStartWidth - dx);
+                stage.setX(resizeStartX + resizeStartWidth - width);
+                stage.setWidth(width);
+            }
+            if (activeResizeEdge.top) {
+                double height = Math.max(MIN_WINDOW_H, resizeStartHeight - dy);
+                stage.setY(resizeStartY + resizeStartHeight - height);
+                stage.setHeight(height);
+            }
+            event.consume();
+        });
+        root.addEventFilter(MouseEvent.MOUSE_RELEASED, event -> {
+            if (activeResizeEdge == ResizeEdge.NONE) return;
+            activeResizeEdge = ResizeEdge.NONE;
+            stage.getScene().setCursor(Cursor.DEFAULT);
+            event.consume();
+        });
+    }
+
+    private ResizeEdge detectResizeEdge(double x, double y, double edge) {
+        boolean left = x <= edge;
+        boolean right = x >= stage.getWidth() - edge;
+        boolean top = y <= edge;
+        boolean bottom = y >= stage.getHeight() - edge;
+        if (left && top) return ResizeEdge.NW;
+        if (right && top) return ResizeEdge.NE;
+        if (left && bottom) return ResizeEdge.SW;
+        if (right && bottom) return ResizeEdge.SE;
+        if (left) return ResizeEdge.W;
+        if (right) return ResizeEdge.E;
+        if (top) return ResizeEdge.N;
+        if (bottom) return ResizeEdge.S;
+        return ResizeEdge.NONE;
+    }
+
+    private Cursor cursorFor(ResizeEdge edge) {
+        return switch (edge) {
+            case N -> Cursor.N_RESIZE;
+            case S -> Cursor.S_RESIZE;
+            case E -> Cursor.E_RESIZE;
+            case W -> Cursor.W_RESIZE;
+            case NE -> Cursor.NE_RESIZE;
+            case NW -> Cursor.NW_RESIZE;
+            case SE -> Cursor.SE_RESIZE;
+            case SW -> Cursor.SW_RESIZE;
+            default -> Cursor.DEFAULT;
+        };
+    }
+
+    private enum ResizeEdge {
+        NONE(false, false, false, false), N(false, false, true, false),
+        S(false, false, false, true), E(false, true, false, false),
+        W(true, false, false, false), NE(false, true, true, false),
+        NW(true, false, true, false), SE(false, true, false, true),
+        SW(true, false, false, true);
+
+        private final boolean left;
+        private final boolean right;
+        private final boolean top;
+        private final boolean bottom;
+
+        ResizeEdge(boolean left, boolean right, boolean top, boolean bottom) {
+            this.left = left;
+            this.right = right;
+            this.top = top;
+            this.bottom = bottom;
+        }
     }
 
     private void openUpdateUrl() {
@@ -478,8 +677,13 @@ public class OverlayWindow implements AssistantListener {
             statusDot.pseudoClassStateChanged(javafx.css.PseudoClass.getPseudoClass("active"), running);
             roleBox.setDisable(running);
             clientContext.setDisable(running);
-            if (running) suggestion.setText("Слушаю разговор…");
-            else if (bootstrap != null) {
+            if (running) {
+                liveSuggestion = null;
+                if (suggestionsBox.getChildren().contains(emptySuggestions)) {
+                    setEmptySuggestionsText("Слушаю разговор…");
+                }
+            } else if (bootstrap != null) {
+                liveSuggestion = null;
                 startStop.setDisable(bootstrap.roles().isEmpty() || bootstrap.version().updateRequired());
             }
         });
@@ -489,21 +693,19 @@ public class OverlayWindow implements AssistantListener {
 
     @Override
     public void onSuggestion(String text, boolean complete) {
-        Platform.runLater(() -> suggestion.setText(
-                text == null || text.isBlank() ? "Слушаю разговор…" : text));
+        Platform.runLater(() -> updateSuggestion(text, complete));
     }
 
     @Override
-    public void onTranscript(String text) {
-        if (text == null || text.isBlank()) return;
-        Platform.runLater(() -> transcript.setText("Речь: " + text));
-    }
+    public void onTranscript(String text) { /* В ленте отображаются только AI-подсказки. */ }
 
     @Override
     public void onError(String message) {
         Platform.runLater(() -> {
             setStatus("Ошибка");
-            suggestion.setText(message == null ? "Неизвестная ошибка" : message);
+            if (suggestionsBox.getChildren().contains(emptySuggestions)) {
+                setEmptySuggestionsText(message == null ? "Неизвестная ошибка" : message);
+            }
         });
     }
 

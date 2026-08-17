@@ -18,22 +18,32 @@ public final class UtteranceDetector {
     private final SpeakerRole role;
     private final int threshold;
     private final int silenceBytesRequired;
+    private final int segmentBytesRequired;
     private final BiConsumer<SpeakerRole, byte[]> utteranceConsumer;
     private final Deque<byte[]> preRoll = new ArrayDeque<>();
     private final ByteArrayOutputStream utterance = new ByteArrayOutputStream();
     private int preRollBytes;
     private int silenceBytes;
+    private int segmentVoiceBytes;
     private boolean speaking;
     private double peakRms;
 
     public UtteranceDetector(SpeakerRole role, int threshold, int silenceMillis,
                              BiConsumer<SpeakerRole, byte[]> utteranceConsumer) {
+        this(role, threshold, silenceMillis, 0, utteranceConsumer);
+    }
+
+    public UtteranceDetector(SpeakerRole role, int threshold, int silenceMillis, int segmentMillis,
+                             BiConsumer<SpeakerRole, byte[]> utteranceConsumer) {
         this.role = role;
         this.threshold = threshold;
         this.silenceBytesRequired = Math.max(9_600, BYTES_PER_SECOND * silenceMillis / 1_000);
+        this.segmentBytesRequired = segmentMillis <= 0 ? 0
+                : Math.max(MIN_UTTERANCE_BYTES, BYTES_PER_SECOND * segmentMillis / 1_000);
         this.utteranceConsumer = utteranceConsumer;
-        log.info("VAD initialized: role={}, threshold={}, silenceMs={}, minUtteranceMs={}, maxUtteranceMs={}",
-                role, threshold, silenceMillis, MIN_UTTERANCE_BYTES * 1000 / BYTES_PER_SECOND,
+        log.info("VAD initialized: role={}, threshold={}, silenceMs={}, segmentMs={}, minUtteranceMs={}, maxUtteranceMs={}",
+                role, threshold, silenceMillis, segmentMillis,
+                MIN_UTTERANCE_BYTES * 1000 / BYTES_PER_SECOND,
                 MAX_UTTERANCE_BYTES * 1000 / BYTES_PER_SECOND);
     }
 
@@ -48,6 +58,7 @@ public final class UtteranceDetector {
                 log.debug("VAD speech started: role={}, rms={}, preRollBytes={}", role,
                         Math.round(currentRms), preRollBytes);
                 preRoll.forEach(utterance::writeBytes);
+                segmentVoiceBytes = pcm.length;
                 preRoll.clear();
                 preRollBytes = 0;
                 silenceBytes = 0;
@@ -56,9 +67,16 @@ public final class UtteranceDetector {
         }
 
         utterance.writeBytes(pcm);
+        if (voice) segmentVoiceBytes += pcm.length;
         peakRms = Math.max(peakRms, currentRms);
         silenceBytes = voice ? 0 : silenceBytes + pcm.length;
-        if (silenceBytes >= silenceBytesRequired || utterance.size() >= MAX_UTTERANCE_BYTES) finish();
+        if (silenceBytes >= silenceBytesRequired) {
+            finish();
+        } else if (segmentBytesRequired > 0 && utterance.size() >= segmentBytesRequired) {
+            emitSegment();
+        } else if (utterance.size() >= MAX_UTTERANCE_BYTES) {
+            finish();
+        }
     }
 
     public synchronized void flush() {
@@ -74,7 +92,7 @@ public final class UtteranceDetector {
         speaking = false;
         silenceBytes = 0;
         long durationMs = data.length * 1000L / BYTES_PER_SECOND;
-        if (data.length >= MIN_UTTERANCE_BYTES) {
+        if (segmentVoiceBytes > 0 && data.length >= MIN_UTTERANCE_BYTES) {
             log.info("VAD utterance complete: role={}, bytes={}, durationMs={}, peakRms={}",
                     role, data.length, durationMs, Math.round(peakRms));
             utteranceConsumer.accept(role, data);
@@ -82,6 +100,19 @@ public final class UtteranceDetector {
             log.debug("VAD utterance ignored as too short: role={}, bytes={}, durationMs={}",
                     role, data.length, durationMs);
         }
+        segmentVoiceBytes = 0;
+        peakRms = 0;
+    }
+
+    private void emitSegment() {
+        byte[] data = utterance.toByteArray();
+        utterance.reset();
+        if (segmentVoiceBytes > 0 && data.length >= MIN_UTTERANCE_BYTES) {
+            log.info("VAD active-listening segment: role={}, bytes={}, durationMs={}",
+                    role, data.length, data.length * 1000L / BYTES_PER_SECOND);
+            utteranceConsumer.accept(role, data);
+        }
+        segmentVoiceBytes = 0;
         peakRms = 0;
     }
 

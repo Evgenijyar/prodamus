@@ -38,6 +38,29 @@ class UtteranceDetectorTest {
         assertThat(utterances).isEmpty();
     }
 
+    @Test
+    void activeListeningSplitsContinuousCustomerSpeechWithoutLosingAudio() {
+        List<SpeakerRole> roles = new ArrayList<>();
+        List<byte[]> segments = new ArrayList<>();
+        UtteranceDetector detector = new UtteranceDetector(SpeakerRole.CUSTOMER, 500, 300, 3_000,
+                (role, bytes) -> {
+                    roles.add(role);
+                    segments.add(bytes);
+                });
+
+        detector.accept(pcm(0, 3_200));
+        detector.accept(pcm(4_000, 6_400));
+        for (int i = 0; i < 17; i++) detector.accept(pcm(4_000, 6_400));
+        detector.accept(pcm(0, 9_600));
+
+        assertThat(segments).hasSize(2);
+        assertThat(roles).containsExactly(SpeakerRole.CUSTOMER, SpeakerRole.CUSTOMER);
+        assertThat(segments.getFirst().length).isGreaterThanOrEqualTo(96_000);
+        // Все байты с момента первого голосового блока сохранены; отбрасывается только
+        // более старый предречевой нулевой блок, вышедший за 200-мс pre-roll.
+        assertThat(segments.stream().mapToInt(bytes -> bytes.length).sum()).isEqualTo(124_800);
+    }
+
     private byte[] pcm(int amplitude, int length) {
         byte[] bytes = new byte[length];
         for (int i = 0; i + 1 < length; i += 2) {

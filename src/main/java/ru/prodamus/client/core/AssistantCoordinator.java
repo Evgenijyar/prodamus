@@ -74,8 +74,10 @@ public class AssistantCoordinator {
 
             microphoneDetector = new UtteranceDetector(SpeakerRole.MANAGER, settings.vadThreshold(),
                     settings.silenceMillis(), this::sendUtterance);
+            int customerSegmentMillis = settings.activeListening()
+                    ? settings.activeListeningIntervalSeconds() * 1_000 : 0;
             loopbackDetector = new UtteranceDetector(SpeakerRole.CUSTOMER, settings.vadThreshold(),
-                    settings.silenceMillis(), this::sendUtterance);
+                    settings.silenceMillis(), customerSegmentMillis, this::sendUtterance);
             microphone = audioService.captureMicrophone(settings.microphoneDeviceId(),
                     microphoneDetector::accept, this::fail);
             loopback = audioService.captureLoopback(settings.loopbackDeviceId(),
@@ -83,7 +85,8 @@ public class AssistantCoordinator {
             microphone.start();
             loopback.start();
             listener.onStatus("Слушаю звонок");
-            log.info("Prodamus started: backend detached, Gemini WebSocket and both audio captures active");
+            log.info("Prodamus started: backend detached, activeListening={}, customerSegmentMs={}",
+                    settings.activeListening(), customerSegmentMillis);
         } catch (Throwable throwable) {
             fail(throwable);
         }
