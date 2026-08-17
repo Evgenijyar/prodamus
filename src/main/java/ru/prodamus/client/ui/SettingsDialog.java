@@ -26,7 +26,7 @@ final class SettingsDialog {
     private final ComboBox<AudioDevice> microphone = new ComboBox<>();
     private final ComboBox<AudioDevice> loopback = new ComboBox<>();
     private final Spinner<Integer> threshold = new Spinner<>(100, 5000, 550, 50);
-    private final Spinner<Integer> silence = new Spinner<>(300, 2500, 400, 100);
+    private final Spinner<Integer> silence = new Spinner<>(300, 2500, 700, 100);
     private final Slider opacity = new Slider(0.65, 1.0, 0.96);
     private final Label deviceStatus = new Label("Загрузка аудиоустройств…");
     private final AppSettings original;

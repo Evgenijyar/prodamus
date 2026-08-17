@@ -110,22 +110,6 @@ public class BackendClient {
         return authorizedPost("/api/client/live-sessions", body, LiveSessionDescriptor.class);
     }
 
-    public LiveSessionDescriptor renewLiveToken(UUID sessionId, String clientContext) {
-        return authorizedPost("/api/client/live-sessions/" + sessionId + "/token",
-                new RenewTokenRequest(clientContext), LiveSessionDescriptor.class);
-    }
-
-    public Lease heartbeat(UUID sessionId) {
-        return authorizedPost("/api/client/live-sessions/" + sessionId + "/heartbeat", null, Lease.class);
-    }
-
-    public void closeLiveSession(UUID sessionId, String reason) {
-        String encoded = java.net.URLEncoder.encode(reason == null ? "Client stop" : reason, java.nio.charset.StandardCharsets.UTF_8);
-        HttpRequest request = authorizedBuilder("/api/client/live-sessions/" + sessionId + "?reason=" + encoded)
-                .DELETE().build();
-        sendAuthorized(request, JsonNode.class);
-    }
-
     private <T> T authorizedPost(String path, Object body, Class<T> type) {
         HttpRequest request = authorizedBuilder(path).POST(body == null ? HttpRequest.BodyPublishers.noBody() : jsonBody(body)).build();
         return sendAuthorized(request, type);
@@ -260,11 +244,8 @@ public class BackendClient {
     public record VersionInfo(String minimumSupported, String latest, String downloadUrl,
                               boolean updateRequired, boolean updateAvailable) {}
     public record StartSessionRequest(long promptProfileId, String deviceId, String clientVersion, String clientContext) {}
-    public record RenewTokenRequest(String clientContext) {}
     public record LiveSessionDescriptor(UUID sessionId, String ephemeralToken, Instant tokenExpiresAt,
-                                        Instant newSessionExpiresAt, String websocketUrl, String model,
-                                        long heartbeatEverySeconds) {}
-    public record Lease(UUID sessionId, Instant leaseExpiresAt) {}
+                                        Instant newSessionExpiresAt, String websocketUrl, String model) {}
 
     public static final class BackendException extends RuntimeException {
         private final int statusCode;

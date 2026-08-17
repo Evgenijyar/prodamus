@@ -2,9 +2,11 @@ package ru.prodamus.client.audio;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.function.BiConsumer;
 
 public final class UtteranceDetector {
     private static final Logger log = LoggerFactory.getLogger(UtteranceDetector.class);
@@ -16,20 +18,20 @@ public final class UtteranceDetector {
     private final SpeakerRole role;
     private final int threshold;
     private final int silenceBytesRequired;
-    private final StreamListener streamListener;
+    private final BiConsumer<SpeakerRole, byte[]> utteranceConsumer;
     private final Deque<byte[]> preRoll = new ArrayDeque<>();
+    private final ByteArrayOutputStream utterance = new ByteArrayOutputStream();
     private int preRollBytes;
-    private int utteranceBytes;
     private int silenceBytes;
     private boolean speaking;
     private double peakRms;
 
     public UtteranceDetector(SpeakerRole role, int threshold, int silenceMillis,
-                             StreamListener streamListener) {
+                             BiConsumer<SpeakerRole, byte[]> utteranceConsumer) {
         this.role = role;
         this.threshold = threshold;
         this.silenceBytesRequired = Math.max(9_600, BYTES_PER_SECOND * silenceMillis / 1_000);
-        this.streamListener = streamListener;
+        this.utteranceConsumer = utteranceConsumer;
         log.info("VAD initialized: role={}, threshold={}, silenceMs={}, minUtteranceMs={}, maxUtteranceMs={}",
                 role, threshold, silenceMillis, MIN_UTTERANCE_BYTES * 1000 / BYTES_PER_SECOND,
                 MAX_UTTERANCE_BYTES * 1000 / BYTES_PER_SECOND);
@@ -45,9 +47,7 @@ public final class UtteranceDetector {
                 peakRms = currentRms;
                 log.debug("VAD speech started: role={}, rms={}, preRollBytes={}", role,
                         Math.round(currentRms), preRollBytes);
-                byte[] initialAudio = drainPreRoll();
-                utteranceBytes = initialAudio.length;
-                streamListener.onStarted(role, initialAudio);
+                preRoll.forEach(utterance::writeBytes);
                 preRoll.clear();
                 preRollBytes = 0;
                 silenceBytes = 0;
@@ -55,43 +55,34 @@ public final class UtteranceDetector {
             return;
         }
 
-        byte[] audio = pcm.clone();
-        utteranceBytes += audio.length;
-        streamListener.onAudio(role, audio);
+        utterance.writeBytes(pcm);
         peakRms = Math.max(peakRms, currentRms);
         silenceBytes = voice ? 0 : silenceBytes + pcm.length;
-        if (silenceBytes >= silenceBytesRequired || utteranceBytes >= MAX_UTTERANCE_BYTES) {
-            finish();
-        }
+        if (silenceBytes >= silenceBytesRequired || utterance.size() >= MAX_UTTERANCE_BYTES) finish();
     }
 
     public synchronized void flush() {
-        log.debug("VAD flush: role={}, speaking={}, streamedBytes={}", role, speaking, utteranceBytes);
+        log.debug("VAD flush: role={}, speaking={}, bufferedBytes={}", role, speaking, utterance.size());
         if (speaking) finish();
         preRoll.clear();
         preRollBytes = 0;
     }
 
     private void finish() {
-        int dataLength = utteranceBytes;
-        utteranceBytes = 0;
+        byte[] data = utterance.toByteArray();
+        utterance.reset();
         speaking = false;
         silenceBytes = 0;
-        long durationMs = dataLength * 1000L / BYTES_PER_SECOND;
-        streamListener.onEnded(role);
-        if (dataLength >= MIN_UTTERANCE_BYTES) {
-            log.info("VAD streamed utterance complete: role={}, bytes={}, durationMs={}, peakRms={}",
-                    role, dataLength, durationMs, Math.round(peakRms));
+        long durationMs = data.length * 1000L / BYTES_PER_SECOND;
+        if (data.length >= MIN_UTTERANCE_BYTES) {
+            log.info("VAD utterance complete: role={}, bytes={}, durationMs={}, peakRms={}",
+                    role, data.length, durationMs, Math.round(peakRms));
+            utteranceConsumer.accept(role, data);
         } else {
-            log.debug("VAD streamed short activity: role={}, bytes={}, durationMs={}", role, dataLength, durationMs);
+            log.debug("VAD utterance ignored as too short: role={}, bytes={}, durationMs={}",
+                    role, data.length, durationMs);
         }
         peakRms = 0;
-    }
-
-    private byte[] drainPreRoll() {
-        ByteArrayOutputStream initial = new ByteArrayOutputStream(preRollBytes);
-        preRoll.forEach(initial::writeBytes);
-        return initial.toByteArray();
     }
 
     private void addPreRoll(byte[] pcm) {
@@ -111,11 +102,5 @@ public final class UtteranceDetector {
             sum += (double) sample * sample;
         }
         return Math.sqrt(sum / samples);
-    }
-
-    public interface StreamListener {
-        void onStarted(SpeakerRole role, byte[] initialAudio);
-        void onAudio(SpeakerRole role, byte[] audio);
-        void onEnded(SpeakerRole role);
     }
 }
