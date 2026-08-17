@@ -49,10 +49,19 @@ public class GeminiTokenService {
 
         Map<String, Object> setup = new LinkedHashMap<>();
         setup.put("model", model.startsWith("models/") ? model : "models/" + model);
-        setup.put("generationConfig", Map.of("responseModalities", List.of("AUDIO")));
+        setup.put("generationConfig", Map.of(
+                "responseModalities", List.of("AUDIO"),
+                "temperature", 0.2,
+                "maxOutputTokens", 512,
+                "thinkingConfig", Map.of("thinkingLevel", "minimal", "includeThoughts", false)
+        ));
         setup.put("inputAudioTranscription", Map.of());
         setup.put("outputAudioTranscription", Map.of());
-        setup.put("realtimeInputConfig", Map.of("automaticActivityDetection", Map.of("disabled", true)));
+        setup.put("realtimeInputConfig", Map.of(
+                "automaticActivityDetection", Map.of("disabled", true),
+                "activityHandling", "NO_INTERRUPTION",
+                "turnCoverage", "TURN_INCLUDES_ONLY_ACTIVITY"
+        ));
         setup.put("contextWindowCompression", Map.of("slidingWindow", Map.of()));
 
         List<String> lockedFields = new java.util.ArrayList<>(List.of(
