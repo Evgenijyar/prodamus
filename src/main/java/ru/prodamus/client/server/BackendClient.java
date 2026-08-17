@@ -110,6 +110,13 @@ public class BackendClient {
         return authorizedPost("/api/client/live-sessions", body, LiveSessionDescriptor.class);
     }
 
+    public PredictiveSessionBundle startPredictiveSession(long promptProfileId, String clientContext,
+                                                           boolean dualSession) {
+        StartPredictiveSessionRequest body = new StartPredictiveSessionRequest(
+                promptProfileId, deviceId(), clientVersion, clientContext, dualSession);
+        return authorizedPost("/api/client/predictive-live-sessions", body, PredictiveSessionBundle.class);
+    }
+
     private <T> T authorizedPost(String path, Object body, Class<T> type) {
         HttpRequest request = authorizedBuilder(path).POST(body == null ? HttpRequest.BodyPublishers.noBody() : jsonBody(body)).build();
         return sendAuthorized(request, type);
@@ -244,8 +251,14 @@ public class BackendClient {
     public record VersionInfo(String minimumSupported, String latest, String downloadUrl,
                               boolean updateRequired, boolean updateAvailable) {}
     public record StartSessionRequest(long promptProfileId, String deviceId, String clientVersion, String clientContext) {}
+    public record StartPredictiveSessionRequest(long promptProfileId, String deviceId, String clientVersion,
+                                                String clientContext, boolean dualSession) {}
     public record LiveSessionDescriptor(UUID sessionId, String ephemeralToken, Instant tokenExpiresAt,
                                         Instant newSessionExpiresAt, String websocketUrl, String model) {}
+    public record PredictiveSessionBundle(String mode, LiveSessionDescriptor tactical,
+                                          LiveSessionDescriptor predictive) {
+        public boolean dual() { return "DUAL".equalsIgnoreCase(mode) && predictive != null; }
+    }
 
     public static final class BackendException extends RuntimeException {
         private final int statusCode;

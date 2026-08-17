@@ -24,6 +24,7 @@ import ru.prodamus.client.config.AppSettings;
 import ru.prodamus.client.config.SettingsService;
 import ru.prodamus.client.core.AssistantCoordinator;
 import ru.prodamus.client.core.AssistantListener;
+import ru.prodamus.client.core.SuggestionKind;
 import ru.prodamus.client.server.BackendClient;
 import ru.prodamus.client.server.BackendClient.Bootstrap;
 import ru.prodamus.client.server.BackendClient.Role;
@@ -31,13 +32,15 @@ import ru.prodamus.client.windows.WindowsPrivacyService;
 
 import java.awt.Desktop;
 import java.net.URI;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executor;
 
 @Component
 public class OverlayWindow implements AssistantListener {
     private static final Logger log = LoggerFactory.getLogger(OverlayWindow.class);
-    private static final String TITLE = "Prodamus — " + ProcessHandle.current().pid();
+    private static final String TITLE = "Prodamus Predictive — " + ProcessHandle.current().pid();
     private static final double WINDOW_W = 700;
     private static final double WINDOW_H = 620;
     private static final double MIN_WINDOW_W = 520;
@@ -71,7 +74,7 @@ public class OverlayWindow implements AssistantListener {
     private boolean roleListenerInstalled;
     private boolean scrollListenerInstalled;
     private boolean autoFollow = true;
-    private Label liveSuggestion;
+    private final Map<SuggestionKind, Label> liveSuggestions = new EnumMap<>(SuggestionKind.class);
     private double dragX;
     private double dragY;
     private ResizeEdge activeResizeEdge = ResizeEdge.NONE;
@@ -263,7 +266,7 @@ public class OverlayWindow implements AssistantListener {
         status.getStyleClass().setAll("status");
         userLabel.getStyleClass().setAll("user-label");
 
-        Label product = new Label("PRODAMUS");
+        Label product = new Label("PRODAMUS PREDICTIVE");
         product.getStyleClass().add("product-wordmark");
         Region headerSpacer = new Region();
         HBox.setHgrow(headerSpacer, Priority.ALWAYS);
@@ -281,7 +284,8 @@ public class OverlayWindow implements AssistantListener {
         captureCheck.setOnAction(e -> {
             settings = new AppSettings(settings.microphoneDeviceId(), settings.loopbackDeviceId(), settings.vadThreshold(),
                     settings.silenceMillis(), captureCheck.isSelected(), settings.overlayOpacity(), false,
-                    settings.activeListening(), settings.activeListeningIntervalSeconds(), settings.lastRoleId());
+                    settings.activeListening(), settings.activeListeningIntervalSeconds(), settings.dualSession(),
+                    settings.lastRoleId());
             settingsService.save(settings);
             applyCaptureProtection();
         });
@@ -302,7 +306,7 @@ public class OverlayWindow implements AssistantListener {
                 settings = new AppSettings(settings.microphoneDeviceId(), settings.loopbackDeviceId(),
                         settings.vadThreshold(), settings.silenceMillis(), settings.excludeFromCapture(),
                         settings.overlayOpacity(), false, settings.activeListening(),
-                        settings.activeListeningIntervalSeconds(), value.id());
+                        settings.activeListeningIntervalSeconds(), settings.dualSession(), value.id());
                 settingsService.save(settings);
             });
             roleListenerInstalled = true;
@@ -446,7 +450,7 @@ public class OverlayWindow implements AssistantListener {
             settings = new AppSettings(updated.microphoneDeviceId(), updated.loopbackDeviceId(),
                     updated.vadThreshold(), updated.silenceMillis(), updated.excludeFromCapture(),
                     updated.overlayOpacity(), false, updated.activeListening(),
-                    updated.activeListeningIntervalSeconds(), updated.lastRoleId());
+                    updated.activeListeningIntervalSeconds(), updated.dualSession(), updated.lastRoleId());
             settingsService.save(settings);
             stage.setOpacity(settings.overlayOpacity());
             captureCheck.setSelected(settings.excludeFromCapture());
@@ -465,7 +469,7 @@ public class OverlayWindow implements AssistantListener {
     }
 
     private void clearSuggestions() {
-        liveSuggestion = null;
+        liveSuggestions.clear();
         suggestionsBox.getChildren().setAll(emptySuggestions);
         emptySuggestions.setVisible(true);
         emptySuggestions.setManaged(true);
@@ -484,7 +488,7 @@ public class OverlayWindow implements AssistantListener {
         }
     }
 
-    private Label addSuggestionCard(String text) {
+    private Label addSuggestionCard(SuggestionKind kind, String text) {
         if (suggestionsBox.getChildren().contains(emptySuggestions)) {
             suggestionsBox.getChildren().remove(emptySuggestions);
         }
@@ -493,9 +497,11 @@ public class OverlayWindow implements AssistantListener {
         body.setMaxWidth(Double.MAX_VALUE);
         body.getStyleClass().add("suggestion-message");
 
-        VBox card = new VBox(body);
+        Label badge = new Label(kind.label());
+        badge.getStyleClass().addAll("suggestion-badge", "suggestion-badge-" + kind.cssClass());
+        VBox card = new VBox(7, badge, body);
         card.setMaxWidth(Double.MAX_VALUE);
-        card.getStyleClass().add("suggestion-card");
+        card.getStyleClass().addAll("suggestion-card", "suggestion-card-" + kind.cssClass());
         if (!suggestionsBox.getChildren().isEmpty()) {
             Separator separator = new Separator();
             separator.getStyleClass().add("suggestion-divider");
@@ -506,20 +512,22 @@ public class OverlayWindow implements AssistantListener {
         return body;
     }
 
-    private void updateSuggestion(String text, boolean complete) {
+    private void updateSuggestion(SuggestionKind kind, String text, boolean complete) {
         if (text == null || text.isBlank()) return;
         String value = text.trim();
         if ("—".equals(value) || "-".equals(value)) {
-            if (complete) liveSuggestion = null;
+            if (complete) liveSuggestions.remove(kind);
             return;
         }
+        Label liveSuggestion = liveSuggestions.get(kind);
         if (liveSuggestion == null) {
-            liveSuggestion = addSuggestionCard(value);
+            liveSuggestion = addSuggestionCard(kind, value);
+            liveSuggestions.put(kind, liveSuggestion);
         } else {
             liveSuggestion.setText(value);
             followSuggestions();
         }
-        if (complete) liveSuggestion = null;
+        if (complete) liveSuggestions.remove(kind);
     }
 
     private void followSuggestions() {
@@ -678,12 +686,12 @@ public class OverlayWindow implements AssistantListener {
             roleBox.setDisable(running);
             clientContext.setDisable(running);
             if (running) {
-                liveSuggestion = null;
+                liveSuggestions.clear();
                 if (suggestionsBox.getChildren().contains(emptySuggestions)) {
                     setEmptySuggestionsText("Слушаю разговор…");
                 }
             } else if (bootstrap != null) {
-                liveSuggestion = null;
+                liveSuggestions.clear();
                 startStop.setDisable(bootstrap.roles().isEmpty() || bootstrap.version().updateRequired());
             }
         });
@@ -692,8 +700,8 @@ public class OverlayWindow implements AssistantListener {
     @Override public void onStatus(String value) { Platform.runLater(() -> setStatus(value)); }
 
     @Override
-    public void onSuggestion(String text, boolean complete) {
-        Platform.runLater(() -> updateSuggestion(text, complete));
+    public void onSuggestion(SuggestionKind kind, String text, boolean complete) {
+        Platform.runLater(() -> updateSuggestion(kind, text, complete));
     }
 
     @Override

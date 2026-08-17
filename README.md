@@ -1,4 +1,18 @@
-# Prodamus Windows Client
+# Prodamus Predictive Windows Client
+
+Экспериментальная альтернативная сборка Prodamus. Она не заменяет обычную ветку `client` и использует
+отдельный backend-контракт `/api/client/predictive-live-sessions`.
+
+В настройках выбирается режим:
+
+- **Две сессии** — backend атомарно резервирует два разных свободных Gemini credential. Тактическая
+  сессия выдаёт фразу для немедленного ответа, а предиктивная параллельно готовит вероятный следующий
+  ход клиента и заготовку реакции. Один и тот же аудиофрагмент отправляется в обе прямые Live-сессии.
+- **Одна сессия** — backend резервирует один credential и выдаёт один токен с совмещённым предиктивным
+  протоколом. В одной карточке приходят текущая фраза и прогноз.
+
+После выдачи одного или двух ephemeral token backend не получает аудио и не участвует в разговоре.
+Обычный endpoint `/api/client/live-sessions` и обычный клиент продолжают работать без изменений.
 
 Нативный Windows-клиент Prodamus для менеджера по продажам. Приложение авторизуется на центральном backend `https://prodamus.abs7.ru`, получает только доступные менеджеру роли и краткоживущий Gemini Live ephemeral token, а затем подключается к Gemini Live напрямую по WebSocket.
 
@@ -68,7 +82,7 @@ https://prodamus.abs7.ru
 Версия клиента задаётся в `src/main/resources/application.properties`:
 
 ```properties
-prodamus.client.version=1.4.0
+prodamus.client.version=1.4.0-predictive.1
 ```
 
 ## Локальные настройки менеджера
@@ -93,7 +107,7 @@ prodamus.client.version=1.4.0
 Fat JAR:
 
 ```text
-target\prodamus-client.jar
+target\prodamus-predictive-client.jar
 ```
 
 ## Сборка Windows EXE

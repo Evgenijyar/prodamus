@@ -30,6 +30,7 @@ public class SettingsService {
                 preferences.getBoolean("expandedPreferred", defaults.expandedPreferred()),
                 preferences.getBoolean("activeListening", defaults.activeListening()),
                 preferences.getInt("activeListeningIntervalSeconds", defaults.activeListeningIntervalSeconds()),
+                preferences.getBoolean("predictiveDualSession", defaults.dualSession()),
                 preferences.getLong("lastRoleId", defaults.lastRoleId())
         );
     }
@@ -44,6 +45,7 @@ public class SettingsService {
         preferences.putBoolean("expandedPreferred", settings.expandedPreferred());
         preferences.putBoolean("activeListening", settings.activeListening());
         preferences.putInt("activeListeningIntervalSeconds", settings.activeListeningIntervalSeconds());
+        preferences.putBoolean("predictiveDualSession", settings.dualSession());
         preferences.putLong("lastRoleId", settings.lastRoleId());
     }
 
@@ -58,7 +60,7 @@ public class SettingsService {
     public String deviceName() {
         String computer = System.getenv("COMPUTERNAME");
         if (computer == null || computer.isBlank()) computer = System.getProperty("user.name", "Windows PC");
-        return computer + " / Prodamus";
+        return computer + " / Prodamus Predictive";
     }
 
     public String lastLogin() { return preferences.get(KEY_LAST_LOGIN, ""); }

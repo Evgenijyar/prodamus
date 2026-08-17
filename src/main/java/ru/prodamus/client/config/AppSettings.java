@@ -10,6 +10,7 @@ public record AppSettings(
         boolean expandedPreferred,
         boolean activeListening,
         int activeListeningIntervalSeconds,
+        boolean dualSession,
         long lastRoleId
 ) {
     public AppSettings {
@@ -17,6 +18,6 @@ public record AppSettings(
     }
 
     public static AppSettings defaults() {
-        return new AppSettings("", "", 550, 700, true, 0.96, false, false, 3, 0L);
+        return new AppSettings("", "", 550, 700, true, 0.96, false, false, 3, true, 0L);
     }
 }
