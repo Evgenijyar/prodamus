@@ -17,7 +17,6 @@ import ru.prodamus.backend.model.AiCredential;
 import ru.prodamus.backend.model.AppUser;
 import ru.prodamus.backend.model.LiveSession;
 import ru.prodamus.backend.model.PromptProfile;
-import ru.prodamus.backend.model.SystemConfig;
 import ru.prodamus.backend.repository.AiCredentialRepository;
 import ru.prodamus.backend.repository.AppUserRepository;
 import ru.prodamus.backend.repository.LiveSessionRepository;
@@ -44,7 +43,6 @@ class LiveSessionServicePredictiveTest {
     @Mock PromptProfileRepository prompts;
     @Mock AiCredentialService credentialService;
     @Mock GeminiTokenService gemini;
-    @Mock SystemConfigService systemConfigService;
 
     private LiveSessionService service;
     private AppUser user;
@@ -82,14 +80,11 @@ class LiveSessionServicePredictiveTest {
                 Optional.ofNullable(stored.get(invocation.getArgument(0))));
         when(sessions.save(any(LiveSession.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        SystemConfig config = new SystemConfig();
-        config.setGlobalPrompt("Global");
-        when(systemConfigService.get()).thenReturn(config);
         when(credentialService.decrypt(first)).thenReturn("key-1");
         when(credentialService.decrypt(second)).thenReturn("key-2");
 
         service = new LiveSessionService(sessions, credentials, users, prompts, credentialService, gemini,
-                systemConfigService, transactionTemplate(), 120);
+                transactionTemplate(), 120);
     }
 
     @Test
@@ -114,6 +109,28 @@ class LiveSessionServicePredictiveTest {
         assertThat(key.getAllValues()).containsExactly("key-1", "key-2");
         assertThat(instruction.getAllValues().get(0)).contains("быстрая тактическая сессия");
         assertThat(instruction.getAllValues().get(1)).contains("фоновая предиктивная сессия");
+    }
+
+    @Test
+    void singleSessionUsesOnlyRoleKnowledgeAndBackendTechnicalProtocol() {
+        when(user.getCustomInstructions()).thenReturn("User custom instructions must not leak");
+        when(credentials.lockEnabledCredentials()).thenReturn(List.of(first));
+        Instant expires = Instant.now().plusSeconds(3600);
+        when(gemini.createConstrainedToken(anyString(), anyString(), anyString()))
+                .thenReturn(token("single-token", expires));
+
+        service.start(1L, "device", 7L, "device", "2.0.0", "Manual client context must not leak");
+
+        ArgumentCaptor<String> instruction = ArgumentCaptor.forClass(String.class);
+        verify(gemini).createConstrainedToken(eq("key-1"), eq("gemini-3.1-flash-live-preview"),
+                instruction.capture());
+        assertThat(instruction.getValue())
+                .contains("Role prompt")
+                .contains("Knowledge")
+                .contains("CLIENT_ACTIVE")
+                .doesNotContain("Global")
+                .doesNotContain("User custom instructions must not leak")
+                .doesNotContain("Manual client context must not leak");
     }
 
     @Test

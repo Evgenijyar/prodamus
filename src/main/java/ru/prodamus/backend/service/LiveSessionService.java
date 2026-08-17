@@ -9,7 +9,6 @@ import ru.prodamus.backend.model.AiCredential;
 import ru.prodamus.backend.model.AppUser;
 import ru.prodamus.backend.model.LiveSession;
 import ru.prodamus.backend.model.PromptProfile;
-import ru.prodamus.backend.model.SystemConfig;
 import ru.prodamus.backend.repository.AiCredentialRepository;
 import ru.prodamus.backend.repository.AppUserRepository;
 import ru.prodamus.backend.repository.LiveSessionRepository;
@@ -27,15 +26,22 @@ import java.util.UUID;
 public class LiveSessionService {
     private static final List<String> LEASED_STATUSES = List.of("PROVISIONING", "ACTIVE");
     private static final String CLIENT_DIALOG_PROTOCOL = """
-            Ты — незаметный ассистент менеджера по продажам во время живого звонка.
-            Ты получаешь по очереди реплики с метками [КЛИЕНТ] и [МЕНЕДЖЕР].
-            Несколько последовательных фрагментов [КЛИЕНТ] могут быть частями одной длинной, ещё продолжающейся реплики. Сохраняй их общий смысл и уточняй следующую подсказку с учётом всех предыдущих частей.
-            После реплики клиента дай менеджеру короткую, конкретную подсказку на русском языке:
-            что ответить прямо сейчас, какой задать вопрос или как обработать возражение.
-            После реплики менеджера оцени контекст, но отвечай только если есть действительно полезная следующая фраза.
-            Не пересказывай диалог, не здоровайся, не называй себя, не озвучивай служебные метки.
-            Пиши максимум 2–3 коротких предложения, готовых к произнесению.
-            Если подсказка не нужна, ответь одним символом: —
+            Это только технический протокол односессионного клиента Prodamus 2. Роль, стиль продаж и факты задаются
+            исключительно разделами «РОЛЬ / СЦЕНАРИЙ» и «БАЗА ЗНАНИЙ» выше; этот протокол их не заменяет.
+
+            Перед каждым аудиофрагментом приходит [CONTROL]. Поля speaker, utterance_id, response_id и phase достоверны.
+            Не определяй говорящего по смыслу. Фрагменты с одинаковым utterance_id — части одной непрерывной реплики.
+            response_id обозначает один технический запрос; его повтор после reconnect нельзя учитывать второй раз.
+
+            MANAGER_COMPLETE: сохрани реплику менеджера в контексте и верни только —.
+            CLIENT_ACTIVE: клиент ещё говорит. Учти все предыдущие части этого utterance_id и верни одну текущую,
+            полностью сформулированную фразу для менеджера. Не продолжай текст прошлого ответа с середины и не выдавай
+            список вариантов. Если смысл не изменился, разрешено повторить улучшенную полную формулировку.
+            CLIENT_FINAL: реплика клиента завершена. Верни одну самодостаточную законченную рекомендацию по всей реплике.
+
+            Любая видимая рекомендация должна быть готова к произнесению целиком: максимум 2 коротких предложения,
+            без заголовков, Markdown, расшифровки клиента, служебных полей и незаконченных окончаний. Если полезной
+            рекомендации действительно нет, верни только —.
             """;
     private static final String PREDICTIVE_SINGLE_PROTOCOL = """
             Ты — экспериментальный предиктивный ассистент менеджера по продажам во время живого звонка.
@@ -139,13 +145,12 @@ public class LiveSessionService {
     private final PromptProfileRepository prompts;
     private final AiCredentialService credentialService;
     private final GeminiTokenService gemini;
-    private final SystemConfigService systemConfigService;
     private final TransactionTemplate transactions;
     private final Duration leaseTtl;
 
     public LiveSessionService(LiveSessionRepository sessions, AiCredentialRepository credentials,
                               AppUserRepository users, PromptProfileRepository prompts, AiCredentialService credentialService,
-                              GeminiTokenService gemini, SystemConfigService systemConfigService,
+                              GeminiTokenService gemini,
                               TransactionTemplate transactions,
                               @Value("${prodamus.live.lease-seconds:120}") long leaseSeconds) {
         this.sessions = sessions;
@@ -154,7 +159,6 @@ public class LiveSessionService {
         this.prompts = prompts;
         this.credentialService = credentialService;
         this.gemini = gemini;
-        this.systemConfigService = systemConfigService;
         this.transactions = transactions;
         this.leaseTtl = Duration.ofSeconds(Math.max(30, leaseSeconds));
     }
@@ -168,8 +172,7 @@ public class LiveSessionService {
         if (reservation == null) throw ApiException.unavailable("SESSION_RESERVATION_FAILED", "Не удалось зарезервировать AI-сессию.");
 
         try {
-            SystemConfig config = systemConfigService.get();
-            String prompt = buildPrompt(config, reservation.prompt(), reservation.user(), manualClientContext);
+            String prompt = buildPrompt(reservation.prompt(), CLIENT_DIALOG_PROTOCOL);
             GeminiTokenService.TokenResult token = gemini.createConstrainedToken(
                     credentialService.decrypt(reservation.credential()), reservation.prompt().getModel(), prompt);
             transactions.executeWithoutResult(status -> activate(reservation.sessionId(), token.expiresAt()));
@@ -217,11 +220,10 @@ public class LiveSessionService {
 
         List<SessionDescriptor> descriptors = new ArrayList<>(requiredCredentials);
         try {
-            SystemConfig config = systemConfigService.get();
             for (int index = 0; index < reservation.sessions().size(); index++) {
                 Reservation current = reservation.sessions().get(index);
                 String protocol = protocols.get(index);
-                String prompt = buildPrompt(config, current.prompt(), current.user(), manualClientContext, protocol);
+                String prompt = buildPrompt(current.prompt(), protocol);
                 GeminiTokenService.TokenResult token = gemini.createConstrainedToken(
                         credentialService.decrypt(current.credential()), current.prompt().getModel(), prompt);
                 transactions.executeWithoutResult(status -> activate(current.sessionId(), token.expiresAt()));
@@ -370,19 +372,11 @@ public class LiveSessionService {
         sessions.save(session);
     }
 
-    private String buildPrompt(SystemConfig config, PromptProfile profile, AppUser user, String manualClientContext) {
-        return buildPrompt(config, profile, user, manualClientContext, CLIENT_DIALOG_PROTOCOL);
-    }
-
-    private String buildPrompt(SystemConfig config, PromptProfile profile, AppUser user,
-                               String manualClientContext, String protocol) {
+    private String buildPrompt(PromptProfile profile, String protocol) {
         StringBuilder out = new StringBuilder(4096);
-        append(out, "ОБЩИЕ ПРАВИЛА", config.getGlobalPrompt());
         append(out, "РОЛЬ / СЦЕНАРИЙ", profile.getSystemPrompt());
         append(out, "БАЗА ЗНАНИЙ", profile.getKnowledgeBase());
-        append(out, "ПЕРСОНАЛЬНЫЕ НАСТРОЙКИ МЕНЕДЖЕРА", user.getCustomInstructions());
-        if (config.isFeatureManualClientContext()) append(out, "КОНТЕКСТ КЛИЕНТА", manualClientContext);
-        append(out, "НЕИЗМЕНЯЕМЫЙ ПРОТОКОЛ PRODAMUS", protocol);
+        append(out, "ТЕХНИЧЕСКИЙ ПРОТОКОЛ PRODAMUS", protocol);
         return out.toString().trim();
     }
 
