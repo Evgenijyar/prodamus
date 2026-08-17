@@ -59,7 +59,7 @@ public class OverlayWindow implements AssistantListener {
     private final Button startStop = new Button("▶  Старт");
     private final ComboBox<Role> roleBox = new ComboBox<>();
     private final TextArea clientContext = new TextArea();
-    private final CheckBox captureCheck = new CheckBox("Не показывать в захвате");
+    private final CheckBox captureCheck = new CheckBox("Скрывать окно");
     private final Label userLabel = new Label();
     private final HBox updateBanner = new HBox(10);
     private final Label updateText = new Label();

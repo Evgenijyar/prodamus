@@ -156,9 +156,29 @@
     -fx-padding: 8 12;
 }
 .secondary-button:hover { -fx-background-color: rgba(255,255,255,.12); }
-.capture-check { -fx-text-fill: #88909d; -fx-font-size: 10px; }
-.capture-check .box { -fx-background-color: #2a2c31; -fx-border-color: #4b5059; -fx-border-radius: 4; -fx-background-radius: 4; }
-.capture-check:selected .box { -fx-background-color: #7782ff; -fx-border-color: #7782ff; }
+.capture-check {
+    -fx-text-fill: #aeb4c0;
+    -fx-font-size: 11px;
+    -fx-graphic-text-gap: 9px;
+}
+.capture-check .box {
+    -fx-background-color: #272930;
+    -fx-border-color: #737b8a;
+    -fx-border-width: 2;
+    -fx-border-radius: 5;
+    -fx-background-radius: 5;
+    -fx-pref-width: 18px;
+    -fx-pref-height: 18px;
+    -fx-min-width: 18px;
+    -fx-min-height: 18px;
+}
+.capture-check .mark { -fx-padding: 5px; }
+.capture-check:selected .box {
+    -fx-background-color: #7782ff;
+    -fx-border-color: #aeb5ff;
+    -fx-effect: dropshadow(gaussian, rgba(119,130,255,.55), 6, .25, 0, 0);
+}
+.capture-check:selected .mark { -fx-background-color: white; }
 
 .update-banner {
     -fx-background-color: rgba(125,135,255,.10);

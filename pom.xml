@@ -13,7 +13,7 @@
 
     <groupId>ru.prodamus.client</groupId>
     <artifactId>prodamus-client</artifactId>
-    <version>1.3.0</version>
+    <version>1.4.0</version>
     <name>Prodamus</name>
     <description>Prodamus native Windows AI sales assistant</description>
 
