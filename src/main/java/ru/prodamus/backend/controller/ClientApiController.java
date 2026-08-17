@@ -41,10 +41,19 @@ public class ClientApiController {
                 body.clientVersion(), body.clientContext());
     }
 
+
+    @PostMapping("/live-sessions/{id}/token")
+    public LiveSessionService.SessionDescriptor renewToken(@PathVariable UUID id,
+                                                            @RequestBody(required = false) RenewTokenRequest body,
+                                                            HttpServletRequest request) {
+        ClientAuthService.AuthenticatedClient client = client(request);
+        return liveSessions.renewToken(client.userId(), client.deviceId(), id, body == null ? null : body.clientContext());
+    }
+
     @PostMapping("/live-sessions/{id}/heartbeat")
     public LiveSessionService.Lease heartbeat(@PathVariable UUID id, HttpServletRequest request) {
         ClientAuthService.AuthenticatedClient client = client(request);
-        return liveSessions.heartbeat(client.userId(), id);
+        return liveSessions.heartbeat(client.userId(), client.deviceId(), id);
     }
 
     @DeleteMapping("/live-sessions/{id}")
@@ -52,7 +61,7 @@ public class ClientApiController {
                                      @RequestParam(value = "reason", required = false) String reason,
                                      HttpServletRequest request) {
         ClientAuthService.AuthenticatedClient client = client(request);
-        liveSessions.close(client.userId(), id, reason == null ? "Client stop" : reason);
+        liveSessions.close(client.userId(), client.deviceId(), id, reason == null ? "Client stop" : reason);
         return Map.of("ok", true);
     }
 
@@ -64,4 +73,5 @@ public class ClientApiController {
 
     public record StartSessionRequest(@NotNull(message = "Выберите роль.") Long promptProfileId,
                                       String deviceId, String clientVersion, String clientContext) {}
+    public record RenewTokenRequest(String clientContext) {}
 }

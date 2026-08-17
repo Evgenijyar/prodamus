@@ -115,9 +115,39 @@ public class LiveSessionService {
         sessions.save(session);
     }
 
-    public Lease heartbeat(Long userId, UUID id) {
+    public SessionDescriptor renewToken(Long userId, String deviceId, UUID id, String manualClientContext) {
+        RenewalMaterial material = transactions.execute(status -> {
+            LiveSession session = requireOwnedDevice(userId, deviceId, id);
+            if (!LEASED_STATUSES.contains(session.getStatus())) {
+                throw ApiException.conflict("SESSION_CLOSED", "Live-сессия уже завершена.");
+            }
+            session.setLeaseExpiresAt(Instant.now().plus(leaseTtl));
+            sessions.save(session);
+            return new RenewalMaterial(session.getUser(), session.getPromptProfile(), session.getAiCredential());
+        });
+        if (material == null) throw ApiException.notFound("Live-сессия не найдена.");
+
+        SystemConfig config = systemConfigService.get();
+        String prompt = buildPrompt(config, material.prompt(), material.user(), manualClientContext);
+        GeminiTokenService.TokenResult token = gemini.createConstrainedToken(
+                credentialService.decrypt(material.credential()), material.prompt().getModel(), prompt);
+
+        transactions.executeWithoutResult(status -> {
+            LiveSession session = requireOwnedDevice(userId, deviceId, id);
+            if (!LEASED_STATUSES.contains(session.getStatus())) {
+                throw ApiException.conflict("SESSION_CLOSED", "Live-сессия уже завершена.");
+            }
+            session.setTokenExpiresAt(token.expiresAt());
+            session.setLeaseExpiresAt(Instant.now().plus(leaseTtl));
+            sessions.save(session);
+        });
+        return new SessionDescriptor(id, token.ephemeralToken(), token.expiresAt(), token.newSessionExpiresAt(),
+                token.websocketUrl(), token.model(), Math.max(10, leaseTtl.toSeconds() / 3));
+    }
+
+    public Lease heartbeat(Long userId, String deviceId, UUID id) {
         return transactions.execute(status -> {
-            LiveSession session = requireOwned(userId, id);
+            LiveSession session = requireOwnedDevice(userId, deviceId, id);
             if (!LEASED_STATUSES.contains(session.getStatus())) throw ApiException.conflict("SESSION_CLOSED", "Live-сессия уже завершена.");
             Instant lease = Instant.now().plus(leaseTtl);
             session.setLeaseExpiresAt(lease);
@@ -126,9 +156,9 @@ public class LiveSessionService {
         });
     }
 
-    public void close(Long userId, UUID id, String reason) {
+    public void close(Long userId, String deviceId, UUID id, String reason) {
         transactions.executeWithoutResult(status -> {
-            LiveSession session = requireOwned(userId, id);
+            LiveSession session = requireOwnedDevice(userId, deviceId, id);
             if (LEASED_STATUSES.contains(session.getStatus())) closeEntity(session, "CLOSED", trim(reason, 480));
         });
     }
@@ -157,6 +187,14 @@ public class LiveSessionService {
 
     private LiveSession requireOwned(Long userId, UUID id) {
         return sessions.findByIdAndUser_Id(id, userId).orElseThrow(() -> ApiException.notFound("Live-сессия не найдена."));
+    }
+
+    private LiveSession requireOwnedDevice(Long userId, String deviceId, UUID id) {
+        LiveSession session = requireOwned(userId, id);
+        if (deviceId == null || !session.getDeviceId().equals(deviceId)) {
+            throw ApiException.forbidden("Live-сессия принадлежит другому устройству.");
+        }
+        return session;
     }
 
     private void closeInternal(UUID id, String status, String reason) {
@@ -190,6 +228,7 @@ public class LiveSessionService {
     private String trim(String value, int max) { if (value == null) return null; return value.length() <= max ? value : value.substring(0, max); }
 
     private record Reservation(UUID sessionId, AppUser user, PromptProfile prompt, AiCredential credential) {}
+    private record RenewalMaterial(AppUser user, PromptProfile prompt, AiCredential credential) {}
     public record SessionDescriptor(UUID sessionId, String ephemeralToken, Instant tokenExpiresAt,
                                     Instant newSessionExpiresAt, String websocketUrl, String model, long heartbeatEverySeconds) {}
     public record Lease(UUID sessionId, Instant leaseExpiresAt) {}

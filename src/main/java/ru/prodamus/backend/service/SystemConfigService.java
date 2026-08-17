@@ -31,11 +31,12 @@ public class SystemConfigService {
 
     @Transactional
     public SystemConfig update(String globalPrompt, String minimumVersion, String latestVersion,
-                               String defaultModelValue, boolean expandedMode, boolean manualContext) {
+                               String clientDownloadUrl, String defaultModelValue, boolean expandedMode, boolean manualContext) {
         SystemConfig config = get();
         config.setGlobalPrompt(value(globalPrompt));
         config.setMinimumClientVersion(nonBlank(minimumVersion, "0.1.0"));
         config.setLatestClientVersion(nonBlank(latestVersion, config.getMinimumClientVersion()));
+        config.setClientDownloadUrl(value(clientDownloadUrl));
         config.setDefaultModel(nonBlank(defaultModelValue, defaultModel));
         config.setFeatureExpandedMode(expandedMode);
         config.setFeatureManualClientContext(manualContext);

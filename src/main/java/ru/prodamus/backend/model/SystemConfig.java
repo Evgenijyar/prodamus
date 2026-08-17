@@ -15,6 +15,8 @@ public class SystemConfig {
     private String latestClientVersion = "0.1.0";
     @Column(name = "default_model", nullable = false, length = 160)
     private String defaultModel;
+    @Column(name = "client_download_url", nullable = false, length = 500)
+    private String clientDownloadUrl = "";
     @Column(name = "feature_expanded_mode", nullable = false)
     private boolean featureExpandedMode = true;
     @Column(name = "feature_manual_client_context", nullable = false)
@@ -32,6 +34,8 @@ public class SystemConfig {
     public void setLatestClientVersion(String latestClientVersion) { this.latestClientVersion = latestClientVersion; }
     public String getDefaultModel() { return defaultModel; }
     public void setDefaultModel(String defaultModel) { this.defaultModel = defaultModel; }
+    public String getClientDownloadUrl() { return clientDownloadUrl; }
+    public void setClientDownloadUrl(String clientDownloadUrl) { this.clientDownloadUrl = clientDownloadUrl == null ? "" : clientDownloadUrl.trim(); }
     public boolean isFeatureExpandedMode() { return featureExpandedMode; }
     public void setFeatureExpandedMode(boolean featureExpandedMode) { this.featureExpandedMode = featureExpandedMode; }
     public boolean isFeatureManualClientContext() { return featureManualClientContext; }

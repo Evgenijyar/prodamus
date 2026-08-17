@@ -8,6 +8,7 @@ import ru.prodamus.backend.model.PromptProfile;
 import ru.prodamus.backend.model.SystemConfig;
 import ru.prodamus.backend.repository.AppUserRepository;
 
+import java.util.Comparator;
 import java.util.List;
 
 @Service
@@ -25,7 +26,10 @@ public class ClientBootstrapService {
         AppUser user = users.findById(userId).orElseThrow(() -> ApiException.notFound("Пользователь не найден."));
         if (!user.isEnabled()) throw ApiException.forbidden("Доступ пользователя отключён.");
         SystemConfig config = configService.get();
-        List<Role> roles = user.getPromptProfiles().stream().filter(PromptProfile::isEnabled)
+        List<Role> roles = user.getPromptProfiles().stream()
+                .filter(PromptProfile::isEnabled)
+                .sorted(Comparator.comparingInt(PromptProfile::getSortOrder)
+                        .thenComparing(PromptProfile::getName, String.CASE_INSENSITIVE_ORDER))
                 .map(p -> new Role(p.getId(), p.getName(), p.getDescription()))
                 .toList();
         String version = clientVersion == null || clientVersion.isBlank() ? "0.0.0" : clientVersion.trim();
@@ -33,7 +37,7 @@ public class ClientBootstrapService {
                 new UserInfo(user.getId(), user.getLogin(), user.getDisplayName()),
                 roles,
                 new Features(config.isFeatureExpandedMode(), config.isFeatureManualClientContext()),
-                new VersionInfo(config.getMinimumClientVersion(), config.getLatestClientVersion(),
+                new VersionInfo(config.getMinimumClientVersion(), config.getLatestClientVersion(), config.getClientDownloadUrl(),
                         compareVersions(version, config.getMinimumClientVersion()) < 0,
                         compareVersions(version, config.getLatestClientVersion()) < 0)
         );
@@ -63,5 +67,5 @@ public class ClientBootstrapService {
     public record UserInfo(Long id, String login, String displayName) {}
     public record Role(Long id, String name, String description) {}
     public record Features(boolean expandedMode, boolean manualClientContext) {}
-    public record VersionInfo(String minimumSupported, String latest, boolean updateRequired, boolean updateAvailable) {}
+    public record VersionInfo(String minimumSupported, String latest, String downloadUrl, boolean updateRequired, boolean updateAvailable) {}
 }

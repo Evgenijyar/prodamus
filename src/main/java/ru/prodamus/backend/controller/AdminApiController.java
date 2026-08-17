@@ -151,7 +151,7 @@ public class AdminApiController {
     @PutMapping("/system")
     public SystemView system(@Valid @RequestBody SystemRequest request) {
         SystemConfig config = systemConfig.update(request.globalPrompt(), request.minimumClientVersion(),
-                request.latestClientVersion(), request.defaultModel(), request.featureExpandedMode(),
+                request.latestClientVersion(), request.clientDownloadUrl(), request.defaultModel(), request.featureExpandedMode(),
                 request.featureManualClientContext());
         audit.record("SYSTEM_CONFIG_UPDATED", "admin", "system", null);
         return SystemView.from(config);
@@ -184,15 +184,16 @@ public class AdminApiController {
     public record SystemRequest(String globalPrompt,
                                 @NotBlank(message = "Укажите минимальную версию клиента.") String minimumClientVersion,
                                 @NotBlank(message = "Укажите актуальную версию клиента.") String latestClientVersion,
+                                String clientDownloadUrl,
                                 @NotBlank(message = "Укажите модель Gemini.") String defaultModel,
                                 boolean featureExpandedMode, boolean featureManualClientContext) {}
 
     public record SystemView(String globalPrompt, String minimumClientVersion, String latestClientVersion,
-                             String defaultModel, boolean featureExpandedMode, boolean featureManualClientContext,
+                             String clientDownloadUrl, String defaultModel, boolean featureExpandedMode, boolean featureManualClientContext,
                              java.time.Instant updatedAt) {
         static SystemView from(SystemConfig c) {
             return new SystemView(c.getGlobalPrompt(), c.getMinimumClientVersion(), c.getLatestClientVersion(),
-                    c.getDefaultModel(), c.isFeatureExpandedMode(), c.isFeatureManualClientContext(), c.getUpdatedAt());
+                    c.getClientDownloadUrl(), c.getDefaultModel(), c.isFeatureExpandedMode(), c.isFeatureManualClientContext(), c.getUpdatedAt());
         }
     }
 }
