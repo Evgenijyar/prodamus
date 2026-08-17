@@ -135,7 +135,9 @@ class LiveSessionServicePredictiveTest {
                 instruction.capture());
         assertThat(instruction.getAllValues().get(0))
                 .contains("единственный видимый менеджеру рекомендатель")
-                .contains("[СКРЫТЫЙ ПРОГНОЗ]");
+                .contains("[СКРЫТЫЙ ПРОГНОЗ]")
+                .contains("[РЕЖИМ ОТВЕТА: ГИПОТЕЗА]")
+                .contains("не переписывают и не отменяют ранее");
         assertThat(instruction.getAllValues().get(1))
                 .contains("ровно ТРИ взаимоисключающих")
                 .contains("ПРИЗНАКИ");
