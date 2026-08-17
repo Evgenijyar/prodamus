@@ -12,10 +12,10 @@
     </parent>
 
     <groupId>ru.prodamus.client</groupId>
-    <artifactId>prodamus-predictive-client</artifactId>
-    <version>1.4.0-predictive.1</version>
-    <name>Prodamus Predictive</name>
-    <description>Experimental predictive dual-session Windows AI sales assistant</description>
+    <artifactId>prodamus-predictive2-client</artifactId>
+    <version>1.5.0-predictive.2</version>
+    <name>Prodamus Predictive 2</name>
+    <description>Scenario-routed low-latency Windows AI sales assistant</description>
 
     <properties>
         <java.version>21</java.version>
@@ -51,7 +51,7 @@
     </dependencies>
 
     <build>
-        <finalName>prodamus-predictive-client</finalName>
+        <finalName>prodamus-predictive2-client</finalName>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>

@@ -124,6 +124,7 @@
 .suggestion-card-tactical { -fx-border-color: rgba(99,213,138,.34); }
 .suggestion-card-predictive { -fx-border-color: rgba(167,139,250,.42); }
 .suggestion-card-combined { -fx-border-color: rgba(91,173,255,.38); }
+.suggestion-card-recommendation { -fx-border-color: rgba(91,173,255,.46); }
 .suggestion-badge {
     -fx-font-size: 9px;
     -fx-font-weight: 900;
@@ -134,6 +135,7 @@
 .suggestion-badge-tactical { -fx-text-fill: #8fe3ac; -fx-background-color: rgba(99,213,138,.13); }
 .suggestion-badge-predictive { -fx-text-fill: #c7b7ff; -fx-background-color: rgba(167,139,250,.16); }
 .suggestion-badge-combined { -fx-text-fill: #9ed0ff; -fx-background-color: rgba(91,173,255,.15); }
+.suggestion-badge-recommendation { -fx-text-fill: #9ed0ff; -fx-background-color: rgba(91,173,255,.15); }
 .suggestion-message {
     -fx-text-fill: #f5f6f8;
     -fx-font-size: 16px;

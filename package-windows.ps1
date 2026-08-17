@@ -15,7 +15,7 @@ try {
     & $mvnw clean package -DskipTests
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    $jar = Join-Path $PSScriptRoot "target\prodamus-predictive-client.jar"
+    $jar = Join-Path $PSScriptRoot "target\prodamus-predictive2-client.jar"
     if (-not (Test-Path $jar)) {
         throw "Maven build did not produce $jar."
     }
@@ -26,7 +26,7 @@ try {
     if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
     New-Item -ItemType Directory -Path $inputDir | Out-Null
     New-Item -ItemType Directory -Path $dist | Out-Null
-    Copy-Item $jar (Join-Path $inputDir "prodamus-predictive-client.jar")
+    Copy-Item $jar (Join-Path $inputDir "prodamus-predictive2-client.jar")
 
     $hasWix = (Get-Command candle.exe -ErrorAction SilentlyContinue) -and
               (Get-Command light.exe -ErrorAction SilentlyContinue)
@@ -37,12 +37,12 @@ try {
 
     $jpackageArgs = @(
         "--type", $packageType,
-        "--name", "Prodamus Predictive",
-        "--app-version", "1.4.0",
+        "--name", "Prodamus Predictive 2",
+        "--app-version", "1.5.0",
         "--vendor", "Prodamus",
-        "--description", "Predictive dual-session AI sales assistant",
+        "--description", "Scenario-routed low-latency AI sales assistant",
         "--input", $inputDir,
-        "--main-jar", "prodamus-predictive-client.jar",
+        "--main-jar", "prodamus-predictive2-client.jar",
         "--dest", $dist,
         "--java-options", "-Dfile.encoding=UTF-8"
     )
@@ -52,7 +52,7 @@ try {
     & $jpackage @jpackageArgs
 
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    Write-Host "Done. Prodamus Predictive package is available in $dist" -ForegroundColor Green
+    Write-Host "Done. Prodamus Predictive 2 package is available in $dist" -ForegroundColor Green
 }
 finally {
     Pop-Location

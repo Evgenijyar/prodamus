@@ -117,6 +117,11 @@ public class BackendClient {
         return authorizedPost("/api/client/predictive-live-sessions", body, PredictiveSessionBundle.class);
     }
 
+    public PredictiveSessionBundle startPredictiveV2Session(long promptProfileId, String clientContext) {
+        StartSessionRequest body = new StartSessionRequest(promptProfileId, deviceId(), clientVersion, clientContext);
+        return authorizedPost("/api/client/predictive-v2-live-sessions", body, PredictiveSessionBundle.class);
+    }
+
     private <T> T authorizedPost(String path, Object body, Class<T> type) {
         HttpRequest request = authorizedBuilder(path).POST(body == null ? HttpRequest.BodyPublishers.noBody() : jsonBody(body)).build();
         return sendAuthorized(request, type);
@@ -257,7 +262,7 @@ public class BackendClient {
                                         Instant newSessionExpiresAt, String websocketUrl, String model) {}
     public record PredictiveSessionBundle(String mode, LiveSessionDescriptor tactical,
                                           LiveSessionDescriptor predictive) {
-        public boolean dual() { return "DUAL".equalsIgnoreCase(mode) && predictive != null; }
+        public boolean dual() { return predictive != null; }
     }
 
     public static final class BackendException extends RuntimeException {

@@ -40,7 +40,7 @@ import java.util.concurrent.Executor;
 @Component
 public class OverlayWindow implements AssistantListener {
     private static final Logger log = LoggerFactory.getLogger(OverlayWindow.class);
-    private static final String TITLE = "Prodamus Predictive — " + ProcessHandle.current().pid();
+    private static final String TITLE = "Prodamus Predictive 2 — " + ProcessHandle.current().pid();
     private static final double WINDOW_W = 700;
     private static final double WINDOW_H = 620;
     private static final double MIN_WINDOW_W = 520;
@@ -702,6 +702,11 @@ public class OverlayWindow implements AssistantListener {
     @Override
     public void onSuggestion(SuggestionKind kind, String text, boolean complete) {
         Platform.runLater(() -> updateSuggestion(kind, text, complete));
+    }
+
+    @Override
+    public void onSuggestionBoundary() {
+        Platform.runLater(liveSuggestions::clear);
     }
 
     @Override

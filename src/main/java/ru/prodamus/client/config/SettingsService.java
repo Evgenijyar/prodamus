@@ -16,7 +16,7 @@ public class SettingsService {
     private static final String KEY_REFRESH = "refreshTokenProtected";
     private static final String KEY_DEVICE_ID = "deviceId";
     private static final String KEY_LAST_LOGIN = "lastLogin";
-    private final Preferences preferences = Preferences.userNodeForPackage(SettingsService.class);
+    private final Preferences preferences = Preferences.userRoot().node("/ru/prodamus/client/predictive2");
 
     public AppSettings load() {
         AppSettings defaults = AppSettings.defaults();
@@ -28,9 +28,9 @@ public class SettingsService {
                 preferences.getBoolean("excludeFromCapture", defaults.excludeFromCapture()),
                 preferences.getDouble("overlayOpacity", defaults.overlayOpacity()),
                 preferences.getBoolean("expandedPreferred", defaults.expandedPreferred()),
-                preferences.getBoolean("activeListening", defaults.activeListening()),
-                preferences.getInt("activeListeningIntervalSeconds", defaults.activeListeningIntervalSeconds()),
-                preferences.getBoolean("predictiveDualSession", defaults.dualSession()),
+                true,
+                preferences.getInt("predictive2RefinementIntervalSeconds", defaults.activeListeningIntervalSeconds()),
+                true,
                 preferences.getLong("lastRoleId", defaults.lastRoleId())
         );
     }
@@ -43,9 +43,7 @@ public class SettingsService {
         preferences.putBoolean("excludeFromCapture", settings.excludeFromCapture());
         preferences.putDouble("overlayOpacity", settings.overlayOpacity());
         preferences.putBoolean("expandedPreferred", settings.expandedPreferred());
-        preferences.putBoolean("activeListening", settings.activeListening());
-        preferences.putInt("activeListeningIntervalSeconds", settings.activeListeningIntervalSeconds());
-        preferences.putBoolean("predictiveDualSession", settings.dualSession());
+        preferences.putInt("predictive2RefinementIntervalSeconds", settings.activeListeningIntervalSeconds());
         preferences.putLong("lastRoleId", settings.lastRoleId());
     }
 
@@ -60,7 +58,7 @@ public class SettingsService {
     public String deviceName() {
         String computer = System.getenv("COMPUTERNAME");
         if (computer == null || computer.isBlank()) computer = System.getProperty("user.name", "Windows PC");
-        return computer + " / Prodamus Predictive";
+        return computer + " / Prodamus Predictive 2";
     }
 
     public String lastLogin() { return preferences.get(KEY_LAST_LOGIN, ""); }

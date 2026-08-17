@@ -12,7 +12,7 @@ public final class ProdamusClientApplication {
     public static void main(String[] args) {
         Thread.setDefaultUncaughtExceptionHandler((thread, error) ->
                 log.error("Uncaught exception in thread {}", thread.getName(), error));
-        log.info("Prodamus Predictive Windows client starting: pid={}, java={}, os={} {}, userDir={}, argsCount={}",
+        log.info("Prodamus Predictive 2 Windows client starting: pid={}, java={}, os={} {}, userDir={}, argsCount={}",
                 ProcessHandle.current().pid(), System.getProperty("java.version"), System.getProperty("os.name"),
                 System.getProperty("os.version"), System.getProperty("user.dir"), args.length);
         ProdamusFxApplication.launchApp(args);

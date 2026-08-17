@@ -14,10 +14,10 @@ public record AppSettings(
         long lastRoleId
 ) {
     public AppSettings {
-        activeListeningIntervalSeconds = Math.max(2, Math.min(15, activeListeningIntervalSeconds));
+        activeListeningIntervalSeconds = Math.max(1, Math.min(5, activeListeningIntervalSeconds));
     }
 
     public static AppSettings defaults() {
-        return new AppSettings("", "", 550, 700, true, 0.96, false, false, 3, false, 0L);
+        return new AppSettings("", "", 550, 700, true, 0.96, false, true, 2, true, 0L);
     }
 }

@@ -81,12 +81,16 @@ public final class GeminiLiveClient implements AutoCloseable {
     }
 
     public void sendUtterance(SpeakerRole role, byte[] pcm) {
+        sendUtterance(role, pcm, "");
+    }
+
+    public void sendUtterance(SpeakerRole role, byte[] pcm, String context) {
         if (pcm == null || pcm.length == 0 || !desiredOpen.get()) return;
         while (desiredOpen.get()) {
             if (!awaitReady()) return;
             WebSocket target = socket;
             try {
-                sendUtterance(target, role, pcm);
+                sendUtterance(target, role, pcm, context);
                 return;
             } catch (RuntimeException exception) {
                 if (!desiredOpen.get()) return;
@@ -96,7 +100,7 @@ public final class GeminiLiveClient implements AutoCloseable {
         }
     }
 
-    private void sendUtterance(WebSocket target, SpeakerRole role, byte[] pcm) {
+    private void sendUtterance(WebSocket target, SpeakerRole role, byte[] pcm, String context) {
         synchronized (sendLock) {
             requireCurrentConnection(target);
             log.info("Sending complete utterance directly to Gemini: role={}, bytes={}, durationMs={}",
@@ -104,6 +108,10 @@ public final class GeminiLiveClient implements AutoCloseable {
             listener.onStatus("Распознана реплика: " + role.label().toLowerCase());
             sendJson(target, mapper.createObjectNode().set("realtimeInput",
                     mapper.createObjectNode().set("activityStart", mapper.createObjectNode())));
+            if (context != null && !context.isBlank()) {
+                sendJson(target, mapper.createObjectNode().set("realtimeInput",
+                        mapper.createObjectNode().put("text", context.trim())));
+            }
             sendJson(target, mapper.createObjectNode().set("realtimeInput",
                     mapper.createObjectNode().put("text", "[" + role.label() + "]")));
             for (int offset = 0; offset < pcm.length; offset += AUDIO_CHUNK_BYTES) {

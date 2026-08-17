@@ -1,0 +1,145 @@
+package ru.prodamus.client.audio;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.ByteArrayOutputStream;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.function.Consumer;
+
+/**
+ * Customer VAD that emits the first words quickly and then emits continuation
+ * fragments without losing the boundary of the original utterance.
+ */
+public final class ProgressiveUtteranceDetector {
+    private static final Logger log = LoggerFactory.getLogger(ProgressiveUtteranceDetector.class);
+    private static final int BYTES_PER_SECOND = 32_000;
+    private static final int PRE_ROLL_BYTES = 6_400;
+    private static final int MIN_SEGMENT_BYTES = 4_800;
+    private static final int MAX_UTTERANCE_BYTES = 960_000;
+
+    private final SpeakerRole role;
+    private final int threshold;
+    private final int silenceBytesRequired;
+    private final int firstSegmentBytes;
+    private final int continuationSegmentBytes;
+    private final Consumer<SpeechSegment> consumer;
+    private final Deque<byte[]> preRoll = new ArrayDeque<>();
+    private final ByteArrayOutputStream segment = new ByteArrayOutputStream();
+
+    private int preRollBytes;
+    private int silenceBytes;
+    private int segmentVoiceBytes;
+    private int utteranceBytes;
+    private int segmentIndex;
+    private long utteranceSequence;
+    private long currentUtteranceId;
+    private boolean speaking;
+
+    public ProgressiveUtteranceDetector(SpeakerRole role, int threshold, int silenceMillis,
+                                        int firstSegmentMillis, int continuationSegmentMillis,
+                                        Consumer<SpeechSegment> consumer) {
+        this.role = role;
+        this.threshold = threshold;
+        this.silenceBytesRequired = Math.max(9_600, BYTES_PER_SECOND * silenceMillis / 1_000);
+        this.firstSegmentBytes = Math.max(MIN_SEGMENT_BYTES,
+                BYTES_PER_SECOND * firstSegmentMillis / 1_000);
+        this.continuationSegmentBytes = Math.max(MIN_SEGMENT_BYTES,
+                BYTES_PER_SECOND * continuationSegmentMillis / 1_000);
+        this.consumer = consumer;
+        log.info("Progressive VAD initialized: role={}, firstMs={}, continuationMs={}, silenceMs={}",
+                role, firstSegmentMillis, continuationSegmentMillis, silenceMillis);
+    }
+
+    public synchronized void accept(byte[] pcm) {
+        if (pcm == null || pcm.length == 0) return;
+        boolean voice = rms(pcm) >= threshold;
+        if (!speaking) {
+            addPreRoll(pcm);
+            if (!voice) return;
+            speaking = true;
+            currentUtteranceId = ++utteranceSequence;
+            segmentIndex = 0;
+            utteranceBytes = 0;
+            silenceBytes = 0;
+            segmentVoiceBytes = pcm.length;
+            preRoll.forEach(segment::writeBytes);
+            utteranceBytes = segment.size();
+            preRoll.clear();
+            preRollBytes = 0;
+            emitIfThresholdReached();
+            return;
+        }
+
+        segment.writeBytes(pcm);
+        utteranceBytes += pcm.length;
+        if (voice) segmentVoiceBytes += pcm.length;
+        silenceBytes = voice ? 0 : silenceBytes + pcm.length;
+        if (silenceBytes >= silenceBytesRequired || utteranceBytes >= MAX_UTTERANCE_BYTES) {
+            finish();
+        } else {
+            emitIfThresholdReached();
+        }
+    }
+
+    public synchronized void flush() {
+        if (speaking) finish();
+        preRoll.clear();
+        preRollBytes = 0;
+    }
+
+    private void emitIfThresholdReached() {
+        int target = segmentIndex == 0 ? firstSegmentBytes : continuationSegmentBytes;
+        if (segment.size() >= target) emit(false);
+    }
+
+    private void finish() {
+        if (segmentVoiceBytes > 0 && segment.size() >= MIN_SEGMENT_BYTES) {
+            emit(true);
+        } else if (segmentIndex > 0) {
+            consumer.accept(new SpeechSegment(role, currentUtteranceId, segmentIndex, true, new byte[0]));
+        }
+        segment.reset();
+        speaking = false;
+        silenceBytes = 0;
+        segmentVoiceBytes = 0;
+        utteranceBytes = 0;
+        segmentIndex = 0;
+    }
+
+    private void emit(boolean finalSegment) {
+        byte[] audio = segment.toByteArray();
+        segment.reset();
+        log.info("Progressive VAD segment: role={}, utterance={}, index={}, final={}, durationMs={}",
+                role, currentUtteranceId, segmentIndex, finalSegment,
+                audio.length * 1000L / BYTES_PER_SECOND);
+        consumer.accept(new SpeechSegment(role, currentUtteranceId, segmentIndex, finalSegment, audio));
+        segmentIndex++;
+        segmentVoiceBytes = 0;
+    }
+
+    private void addPreRoll(byte[] pcm) {
+        preRoll.addLast(pcm.clone());
+        preRollBytes += pcm.length;
+        while (preRollBytes > PRE_ROLL_BYTES && !preRoll.isEmpty()) {
+            preRollBytes -= preRoll.removeFirst().length;
+        }
+    }
+
+    private double rms(byte[] pcm) {
+        if (pcm.length < 2) return 0;
+        double sum = 0;
+        int samples = pcm.length / 2;
+        for (int i = 0; i < samples; i++) {
+            int sample = (pcm[i * 2] & 0xff) | (pcm[i * 2 + 1] << 8);
+            sum += (double) sample * sample;
+        }
+        return Math.sqrt(sum / samples);
+    }
+
+    public record SpeechSegment(SpeakerRole role, long utteranceId, int segmentIndex,
+                                boolean finalSegment, byte[] audio) {
+        public boolean firstSegment() { return segmentIndex == 0; }
+    }
+}
