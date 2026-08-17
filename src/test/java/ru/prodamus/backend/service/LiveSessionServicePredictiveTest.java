@@ -134,12 +134,14 @@ class LiveSessionServicePredictiveTest {
         verify(gemini, times(2)).createConstrainedToken(anyString(), eq("gemini-3.1-flash-live-preview"),
                 instruction.capture());
         assertThat(instruction.getAllValues().get(0))
-                .contains("единственный видимый менеджеру рекомендатель")
+                .contains("единственный видимый рекомендатель")
                 .contains("[СКРЫТЫЙ ПРОГНОЗ]")
-                .contains("[РЕЖИМ ОТВЕТА: ГИПОТЕЗА]")
-                .contains("не переписывают и не отменяют ранее");
+                .contains("CLIENT_CONTINUATION")
+                .contains("CLIENT_FINAL_RECOVERY")
+                .contains("ответ — запрещён");
         assertThat(instruction.getAllValues().get(1))
-                .contains("ровно ТРИ взаимоисключающих")
+                .contains("ровно три взаимоисключающих")
+                .contains("CLIENT_FINAL")
                 .contains("ПРИЗНАКИ");
     }
 
