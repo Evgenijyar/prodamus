@@ -38,6 +38,19 @@ public class ClientApiController {
                 body.clientVersion(), body.clientContext());
     }
 
+    @PostMapping("/predictive-live-sessions")
+    public LiveSessionService.PredictiveSessionBundle startPredictive(
+            @Valid @RequestBody StartPredictiveSessionRequest body, HttpServletRequest request) {
+        ClientAuthService.AuthenticatedClient client = client(request);
+        ClientBootstrapService.Bootstrap state = bootstrap.bootstrap(client.userId(), body.clientVersion());
+        if (state.version().updateRequired()) {
+            throw ApiException.conflict("CLIENT_UPDATE_REQUIRED",
+                    "Версия приложения больше не поддерживается. Обновите Prodamus Predictive.");
+        }
+        return liveSessions.startPredictive(client.userId(), client.deviceId(), body.promptProfileId(),
+                body.deviceId(), body.clientVersion(), body.clientContext(), body.dualSession());
+    }
+
     private ClientAuthService.AuthenticatedClient client(HttpServletRequest request) {
         Object value = request.getAttribute(ClientAuthInterceptor.CLIENT);
         if (value instanceof ClientAuthService.AuthenticatedClient client) return client;
@@ -46,4 +59,7 @@ public class ClientApiController {
 
     public record StartSessionRequest(@NotNull(message = "Выберите роль.") Long promptProfileId,
                                       String deviceId, String clientVersion, String clientContext) {}
+    public record StartPredictiveSessionRequest(@NotNull(message = "Выберите роль.") Long promptProfileId,
+                                                String deviceId, String clientVersion, String clientContext,
+                                                boolean dualSession) {}
 }

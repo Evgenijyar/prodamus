@@ -79,6 +79,19 @@ The backend validates the assigned role and version, reserves credential capacit
 
 Only one active Live-session is allowed for one manager at a time. Active session operations are additionally bound to the authenticated `deviceId`; another logged-in device cannot heartbeat, renew or close that session.
 
+## POST /api/client/predictive-live-sessions
+
+Optional experimental contract used only by the `predictive-client` branch. The request keeps the normal
+session fields and adds `dualSession`.
+
+- `dualSession=false`: reserves one free AI credential and returns a `SINGLE` bundle with one tactical
+  descriptor using a combined immediate-plus-forecast server protocol.
+- `dualSession=true`: atomically reserves two **different** free AI credentials and returns a `DUAL`
+  bundle containing `tactical` and `predictive` descriptors with separate hidden protocols.
+
+If two distinct credentials are unavailable, the request fails with `NO_AI_CAPACITY` and does not silently
+fall back. The existing `/api/client/live-sessions` endpoint and its response are unchanged.
+
 ## POST /api/client/live-sessions/{sessionId}/token
 
 Reissues a short-lived constrained Gemini token for an already active Prodamus session. Used by the Windows client for long-running calls without exposing the permanent Gemini API key.

@@ -11,6 +11,10 @@ The backend is the control plane. It does not proxy realtime call audio.
 
 Once the backend has returned the constrained ephemeral token, it is not on the active-conversation path. The client sends no heartbeat, renew, audio, transcript, history or close request during that conversation. Unexpected direct WebSocket failures are recovered client-side with Gemini session resumption and the latest handle.
 
+The optional predictive client can request either one combined token or an atomic pair of tokens backed by
+two distinct available credentials. In dual mode the Windows client fans captured utterances out directly to
+a tactical and a forecasting Gemini Live session. This additive endpoint does not alter the regular client flow.
+
 ## Security model
 
 - User passwords: PBKDF2-HMAC-SHA256 with a random salt.
