@@ -1,16 +1,14 @@
 package ru.prodamus.client.core;
 
 public enum SuggestionKind {
-    RECOMMENDATION("ПОДСКАЗКА", "recommendation");
+    HYPOTHESIS("hypothesis"),
+    FINAL("final");
 
-    private final String label;
     private final String cssClass;
 
-    SuggestionKind(String label, String cssClass) {
-        this.label = label;
+    SuggestionKind(String cssClass) {
         this.cssClass = cssClass;
     }
 
-    public String label() { return label; }
     public String cssClass() { return cssClass; }
 }

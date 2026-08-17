@@ -41,9 +41,12 @@ public class AssistantCoordinator {
             Thread.ofPlatform().name("gemini-v2-forecaster-sender").daemon(true).factory());
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicLong forecastSequence = new AtomicLong();
+    private final AtomicLong conversationSequence = new AtomicLong();
     private final AtomicReference<ForecastSnapshot> latestForecast = new AtomicReference<>();
+    private final AtomicReference<RecommendationTurn> activeRecommendation = new AtomicReference<>();
 
     private volatile long forwardedForecastVersion;
+    private volatile long conversationId;
     private volatile GeminiLiveClient recommender;
     private volatile GeminiLiveClient forecaster;
     private volatile WindowsAudioService.WasapiCapture microphone;
@@ -67,7 +70,9 @@ public class AssistantCoordinator {
         }
         this.listener = listener;
         latestForecast.set(null);
+        activeRecommendation.set(null);
         forwardedForecastVersion = 0;
+        conversationId = conversationSequence.incrementAndGet();
         listener.onRunningChanged(true);
         listener.onStatus("Получаю два ключа Gemini…");
         executor.execute(() -> doStart(settings, promptProfileId, clientContext));
@@ -120,7 +125,15 @@ public class AssistantCoordinator {
         GeminiLiveClient visible = recommender;
         GeminiLiveClient hidden = forecaster;
         if (visible == null || hidden == null) return;
-        recommenderSender.execute(() -> sendAudioIfCurrent(visible, role, audio, true));
+        recommenderSender.execute(() -> {
+            if (!isCurrent(visible, true)) return;
+            activeRecommendation.set(null);
+            try {
+                visible.sendUtteranceAndAwait(role, audio, "");
+            } catch (Throwable throwable) {
+                fail(throwable);
+            }
+        });
         forecasterSender.execute(() -> sendAudioIfCurrent(hidden, role, audio, false));
     }
 
@@ -130,26 +143,35 @@ public class AssistantCoordinator {
         GeminiLiveClient hidden = forecaster;
         if (visible == null || hidden == null) return;
 
-        if (segment.firstSegment()) {
-            AssistantListener current = listener;
-            if (current != null) current.onSuggestionBoundary();
-        }
+        long displayUtteranceId = (conversationId << 32) | (segment.utteranceId() & 0xffff_ffffL);
+        SuggestionKind kind = segment.finalSegment() ? SuggestionKind.FINAL : SuggestionKind.HYPOTHESIS;
         log.info("Customer progressive segment: utterance={}, index={}, final={}, bytes={}",
                 segment.utteranceId(), segment.segmentIndex(), segment.finalSegment(), segment.audio().length);
 
         recommenderSender.execute(() -> {
             try {
                 if (!isCurrent(visible, true)) return;
-                if (segment.audio().length > 0) {
-                    visible.sendUtterance(segment.role(), segment.audio(), takeLatestForecastContext());
-                }
+                activeRecommendation.set(new RecommendationTurn(displayUtteranceId, kind));
+                visible.sendUtteranceAndAwait(segment.role(), segment.audio(),
+                        recommendationContext(segment, takeLatestForecastContext()));
             } catch (Throwable throwable) {
                 fail(throwable);
+            } finally {
+                activeRecommendation.set(null);
             }
         });
         if (segment.audio().length > 0) {
             forecasterSender.execute(() -> sendAudioIfCurrent(hidden, segment.role(), segment.audio(), false));
         }
+    }
+
+    private String recommendationContext(SpeechSegment segment, String forecast) {
+        String mode = segment.finalSegment()
+                ? "[РЕЖИМ ОТВЕТА: ИТОГ. Реплика клиента закончена. Добавь одну окончательную рекомендацию, "
+                    + "не повторяя и не отменяя ранее показанные гипотезы.]"
+                : "[РЕЖИМ ОТВЕТА: ГИПОТЕЗА. Это часть продолжающейся реплики. Дай одну законченную раннюю фразу; "
+                    + "последующие уточнения не должны обрывать эту фразу.]";
+        return forecast == null || forecast.isBlank() ? mode : forecast + "\n" + mode;
     }
 
     private String takeLatestForecastContext() {
@@ -190,10 +212,10 @@ public class AssistantCoordinator {
         recommender = null;
         forecaster = null;
         latestForecast.set(null);
+        activeRecommendation.set(null);
 
         AssistantListener current = listener;
         if (current != null) {
-            current.onSuggestionBoundary();
             current.onRunningChanged(false);
             current.onStatus("Остановлено");
         }
@@ -244,7 +266,10 @@ public class AssistantCoordinator {
         @Override
         public void onSuggestion(String text, boolean complete) {
             AssistantListener current = listener;
-            if (current != null) current.onSuggestion(SuggestionKind.RECOMMENDATION, text, false);
+            RecommendationTurn turn = activeRecommendation.get();
+            if (current != null && turn != null) {
+                current.onSuggestion(turn.utteranceId(), turn.kind(), text, complete);
+            }
         }
 
         @Override
@@ -280,4 +305,5 @@ public class AssistantCoordinator {
     }
 
     private record ForecastSnapshot(long version, String text) { }
+    private record RecommendationTurn(long utteranceId, SuggestionKind kind) { }
 }

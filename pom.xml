@@ -13,7 +13,7 @@
 
     <groupId>ru.prodamus.client</groupId>
     <artifactId>prodamus-predictive2-client</artifactId>
-    <version>1.5.0-predictive.2</version>
+    <version>1.5.1-predictive.2</version>
     <name>Prodamus Predictive 2</name>
     <description>Scenario-routed low-latency Windows AI sales assistant</description>
 

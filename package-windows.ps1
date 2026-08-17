@@ -38,7 +38,7 @@ try {
     $jpackageArgs = @(
         "--type", $packageType,
         "--name", "Prodamus Predictive 2",
-        "--app-version", "1.5.0",
+        "--app-version", "1.5.1",
         "--vendor", "Prodamus",
         "--description", "Scenario-routed low-latency AI sales assistant",
         "--input", $inputDir,

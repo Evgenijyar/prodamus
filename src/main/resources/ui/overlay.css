@@ -121,35 +121,23 @@
     -fx-border-color: rgba(132,144,255,.18);
     -fx-border-radius: 10;
 }
-.suggestion-card-tactical { -fx-border-color: rgba(99,213,138,.34); }
-.suggestion-card-predictive { -fx-border-color: rgba(167,139,250,.42); }
-.suggestion-card-combined { -fx-border-color: rgba(91,173,255,.38); }
-.suggestion-card-recommendation { -fx-border-color: rgba(91,173,255,.46); }
-.suggestion-badge {
-    -fx-font-size: 9px;
-    -fx-font-weight: 900;
-    -fx-padding: 3 7;
-    -fx-background-radius: 999;
-    -fx-max-width: 160px;
-}
-.suggestion-badge-tactical { -fx-text-fill: #8fe3ac; -fx-background-color: rgba(99,213,138,.13); }
-.suggestion-badge-predictive { -fx-text-fill: #c7b7ff; -fx-background-color: rgba(167,139,250,.16); }
-.suggestion-badge-combined { -fx-text-fill: #9ed0ff; -fx-background-color: rgba(91,173,255,.15); }
-.suggestion-badge-recommendation { -fx-text-fill: #9ed0ff; -fx-background-color: rgba(91,173,255,.15); }
 .suggestion-message {
     -fx-text-fill: #f5f6f8;
     -fx-font-size: 16px;
     -fx-font-weight: 600;
     -fx-line-spacing: 2px;
 }
-.suggestion-divider .line { -fx-border-color: rgba(255,255,255,.075); -fx-border-width: 1 0 0 0; }
-.jump-latest {
-    -fx-background-color: rgba(64,68,80,.96);
-    -fx-text-fill: #e5e7ed;
-    -fx-background-radius: 999;
-    -fx-padding: 8 12;
-    -fx-font-size: 10px;
+.suggestion-message-hypothesis {
+    -fx-text-fill: #aeb8cb;
+    -fx-font-style: italic;
+    -fx-font-weight: 500;
 }
+.suggestion-message-final {
+    -fx-text-fill: #f5f6f8;
+    -fx-font-style: normal;
+    -fx-font-weight: 600;
+}
+.suggestion-divider .line { -fx-border-color: rgba(255,255,255,.075); -fx-border-width: 1 0 0 0; }
 .scroll-bar:vertical { -fx-pref-width: 8; -fx-background-color: transparent; }
 .scroll-bar:vertical .thumb { -fx-background-color: #4a4e58; -fx-background-radius: 8; }
 .scroll-bar .increment-button, .scroll-bar .decrement-button { -fx-pref-height: 0; -fx-pref-width: 0; }

@@ -32,7 +32,7 @@ import ru.prodamus.client.windows.WindowsPrivacyService;
 
 import java.awt.Desktop;
 import java.net.URI;
-import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
@@ -58,7 +58,6 @@ public class OverlayWindow implements AssistantListener {
     private final VBox suggestionsBox = new VBox(12);
     private final ScrollPane suggestionsScroll = new ScrollPane(suggestionsBox);
     private final Label emptySuggestions = new Label("Подсказки появятся здесь после начала разговора.");
-    private final Button jumpLatest = new Button("↓  К последней подсказке");
     private final Button startStop = new Button("▶  Старт");
     private final ComboBox<Role> roleBox = new ComboBox<>();
     private final TextArea clientContext = new TextArea();
@@ -72,9 +71,8 @@ public class OverlayWindow implements AssistantListener {
     private AppSettings settings;
     private Bootstrap bootstrap;
     private boolean roleListenerInstalled;
-    private boolean scrollListenerInstalled;
-    private boolean autoFollow = true;
-    private final Map<SuggestionKind, Label> liveSuggestions = new EnumMap<>(SuggestionKind.class);
+    private final Map<Long, VBox> suggestionCards = new HashMap<>();
+    private final Map<LiveSuggestionKey, Label> liveSuggestions = new HashMap<>();
     private double dragX;
     private double dragY;
     private ResizeEdge activeResizeEdge = ResizeEdge.NONE;
@@ -330,27 +328,7 @@ public class OverlayWindow implements AssistantListener {
         suggestionsScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         suggestionsScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
         suggestionsScroll.getStyleClass().setAll("suggestions-scroll");
-        if (!scrollListenerInstalled) {
-            suggestionsScroll.vvalueProperty().addListener((obs, old, value) -> {
-                autoFollow = value.doubleValue() >= 0.985;
-                jumpLatest.setVisible(!autoFollow);
-                jumpLatest.setManaged(!autoFollow);
-            });
-            scrollListenerInstalled = true;
-        }
-
-        jumpLatest.getStyleClass().setAll("jump-latest");
-        jumpLatest.setVisible(false);
-        jumpLatest.setManaged(false);
-        jumpLatest.setOnAction(e -> {
-            autoFollow = true;
-            jumpLatest.setVisible(false);
-            jumpLatest.setManaged(false);
-            suggestionsScroll.setVvalue(1.0);
-        });
-        StackPane suggestionsStack = new StackPane(suggestionsScroll, jumpLatest);
-        StackPane.setAlignment(jumpLatest, Pos.BOTTOM_RIGHT);
-        StackPane.setMargin(jumpLatest, new Insets(0, 16, 14, 0));
+        StackPane suggestionsStack = new StackPane(suggestionsScroll);
         suggestionsStack.getStyleClass().add("suggestions-stack");
         VBox.setVgrow(suggestionsStack, Priority.ALWAYS);
 
@@ -470,12 +448,10 @@ public class OverlayWindow implements AssistantListener {
 
     private void clearSuggestions() {
         liveSuggestions.clear();
+        suggestionCards.clear();
         suggestionsBox.getChildren().setAll(emptySuggestions);
         emptySuggestions.setVisible(true);
         emptySuggestions.setManaged(true);
-        autoFollow = true;
-        jumpLatest.setVisible(false);
-        jumpLatest.setManaged(false);
         Platform.runLater(() -> suggestionsScroll.setVvalue(1.0));
     }
 
@@ -488,51 +464,57 @@ public class OverlayWindow implements AssistantListener {
         }
     }
 
-    private Label addSuggestionCard(SuggestionKind kind, String text) {
+    private Label addSuggestionLine(long utteranceId, SuggestionKind kind, String text) {
         if (suggestionsBox.getChildren().contains(emptySuggestions)) {
             suggestionsBox.getChildren().remove(emptySuggestions);
+        }
+        VBox card = suggestionCards.get(utteranceId);
+        if (card == null) {
+            card = new VBox(9);
+            card.setMaxWidth(Double.MAX_VALUE);
+            card.getStyleClass().add("suggestion-card");
+            if (!suggestionsBox.getChildren().isEmpty()) {
+                Separator separator = new Separator();
+                separator.getStyleClass().add("suggestion-divider");
+                suggestionsBox.getChildren().add(separator);
+            }
+            suggestionsBox.getChildren().add(card);
+            suggestionCards.put(utteranceId, card);
         }
         Label body = new Label(text.trim());
         body.setWrapText(true);
         body.setMaxWidth(Double.MAX_VALUE);
-        body.getStyleClass().add("suggestion-message");
-
-        Label badge = new Label(kind.label());
-        badge.getStyleClass().addAll("suggestion-badge", "suggestion-badge-" + kind.cssClass());
-        VBox card = new VBox(7, badge, body);
-        card.setMaxWidth(Double.MAX_VALUE);
-        card.getStyleClass().addAll("suggestion-card", "suggestion-card-" + kind.cssClass());
-        if (!suggestionsBox.getChildren().isEmpty()) {
-            Separator separator = new Separator();
-            separator.getStyleClass().add("suggestion-divider");
-            suggestionsBox.getChildren().add(separator);
-        }
-        suggestionsBox.getChildren().add(card);
+        body.getStyleClass().addAll("suggestion-message", "suggestion-message-" + kind.cssClass());
+        card.getChildren().add(body);
         followSuggestions();
         return body;
     }
 
-    private void updateSuggestion(SuggestionKind kind, String text, boolean complete) {
+    private void updateSuggestion(long utteranceId, SuggestionKind kind, String text, boolean complete) {
         if (text == null || text.isBlank()) return;
         String value = text.trim();
+        LiveSuggestionKey key = new LiveSuggestionKey(utteranceId, kind);
         if ("—".equals(value) || "-".equals(value)) {
-            if (complete) liveSuggestions.remove(kind);
+            if (complete) liveSuggestions.remove(key);
             return;
         }
-        Label liveSuggestion = liveSuggestions.get(kind);
+        Label liveSuggestion = liveSuggestions.get(key);
         if (liveSuggestion == null) {
-            liveSuggestion = addSuggestionCard(kind, value);
-            liveSuggestions.put(kind, liveSuggestion);
+            liveSuggestion = addSuggestionLine(utteranceId, kind, value);
+            liveSuggestions.put(key, liveSuggestion);
         } else {
             liveSuggestion.setText(value);
             followSuggestions();
         }
-        if (complete) liveSuggestions.remove(kind);
+        if (complete) liveSuggestions.remove(key);
     }
 
     private void followSuggestions() {
-        if (!autoFollow) return;
-        Platform.runLater(() -> suggestionsScroll.setVvalue(1.0));
+        Platform.runLater(() -> {
+            suggestionsBox.applyCss();
+            suggestionsBox.layout();
+            suggestionsScroll.setVvalue(1.0);
+        });
     }
 
     private void installResizeSupport(Region root) {
@@ -700,13 +682,8 @@ public class OverlayWindow implements AssistantListener {
     @Override public void onStatus(String value) { Platform.runLater(() -> setStatus(value)); }
 
     @Override
-    public void onSuggestion(SuggestionKind kind, String text, boolean complete) {
-        Platform.runLater(() -> updateSuggestion(kind, text, complete));
-    }
-
-    @Override
-    public void onSuggestionBoundary() {
-        Platform.runLater(liveSuggestions::clear);
+    public void onSuggestion(long utteranceId, SuggestionKind kind, String text, boolean complete) {
+        Platform.runLater(() -> updateSuggestion(utteranceId, kind, text, complete));
     }
 
     @Override
@@ -725,4 +702,6 @@ public class OverlayWindow implements AssistantListener {
     private void setStatus(String value) {
         status.setText(value == null ? "" : value);
     }
+
+    private record LiveSuggestionKey(long utteranceId, SuggestionKind kind) { }
 }

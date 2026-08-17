@@ -40,6 +40,7 @@ public final class GeminiLiveClient implements AutoCloseable {
     private final AtomicBoolean reconnecting = new AtomicBoolean();
     private final AtomicLong successfulReconnects = new AtomicLong();
     private final Object sendLock = new Object();
+    private final Object turnLock = new Object();
     private final Object connectionLock = new Object();
     private final Object suggestionLock = new Object();
     private final StringBuilder suggestion = new StringBuilder();
@@ -47,6 +48,7 @@ public final class GeminiLiveClient implements AutoCloseable {
     private volatile LiveSessionDescriptor descriptor;
     private volatile WebSocket socket;
     private volatile CountDownLatch readyLatch = new CountDownLatch(1);
+    private volatile CountDownLatch turnCompletion;
     private volatile String resumptionHandle = "";
     private volatile long sentAudioBytes;
     private volatile long sentMessages;
@@ -95,6 +97,43 @@ public final class GeminiLiveClient implements AutoCloseable {
             } catch (RuntimeException exception) {
                 if (!desiredOpen.get()) return;
                 log.warn("Direct Gemini send failed; reconnecting immediately: {}", rootMessage(exception));
+                connectionLost(target, "Ошибка отправки в Gemini Live", exception);
+            }
+        }
+    }
+
+    public boolean sendUtteranceAndAwait(SpeakerRole role, byte[] pcm, String context) {
+        byte[] audio = pcm == null ? new byte[0] : pcm;
+        if ((audio.length == 0 && (context == null || context.isBlank())) || !desiredOpen.get()) return false;
+        synchronized (turnLock) {
+            CountDownLatch completion = new CountDownLatch(1);
+            turnCompletion = completion;
+            try {
+                sendTurnWithRetry(role, audio, context);
+                if (!completion.await(20, TimeUnit.SECONDS)) {
+                    log.warn("Gemini response generation did not finish within 20 seconds");
+                    return false;
+                }
+                return true;
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                return false;
+            } finally {
+                if (turnCompletion == completion) turnCompletion = null;
+            }
+        }
+    }
+
+    private void sendTurnWithRetry(SpeakerRole role, byte[] pcm, String context) {
+        while (desiredOpen.get()) {
+            if (!awaitReady()) return;
+            WebSocket target = socket;
+            try {
+                sendUtterance(target, role, pcm, context);
+                return;
+            } catch (RuntimeException exception) {
+                if (!desiredOpen.get()) return;
+                log.warn("Direct Gemini turn send failed; reconnecting immediately: {}", rootMessage(exception));
                 connectionLost(target, "Ошибка отправки в Gemini Live", exception);
             }
         }
@@ -225,6 +264,7 @@ public final class GeminiLiveClient implements AutoCloseable {
         if (!desiredOpen.get() || source == null || source != socket) return;
         if (!connected.getAndSet(false) && reconnecting.get()) return;
         freezeCurrentSuggestion();
+        signalTurnCompleted();
         readyLatch = new CountDownLatch(1);
         if (!reconnecting.compareAndSet(false, true)) return;
 
@@ -327,6 +367,11 @@ public final class GeminiLiveClient implements AutoCloseable {
                 listener.onSuggestion(current, false);
             }
             if (content.path("interrupted").asBoolean(false)) freezeCurrentSuggestion();
+            if (content.path("interrupted").asBoolean(false)) signalTurnCompleted();
+            if (content.path("generationComplete").asBoolean(false)) {
+                freezeCurrentSuggestion();
+                signalTurnCompleted();
+            }
             if (content.path("turnComplete").asBoolean(false)) {
                 freezeCurrentSuggestion();
                 listener.onStatus("Слушаю звонок");
@@ -348,12 +393,18 @@ public final class GeminiLiveClient implements AutoCloseable {
         }
     }
 
+    private void signalTurnCompleted() {
+        CountDownLatch completion = turnCompletion;
+        if (completion != null) completion.countDown();
+    }
+
     @Override
     public void close() {
         boolean wasConnected = connected.getAndSet(false);
         desiredOpen.set(false);
         reconnecting.set(false);
         readyLatch.countDown();
+        signalTurnCompleted();
         reconnectExecutor.shutdownNow();
         WebSocket active = socket;
         socket = null;
