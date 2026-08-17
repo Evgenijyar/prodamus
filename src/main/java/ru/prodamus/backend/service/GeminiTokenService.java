@@ -47,26 +47,33 @@ public class GeminiTokenService {
         Instant expiresAt = now.plus(tokenExpireMinutes, ChronoUnit.MINUTES);
         Instant newSessionExpiresAt = now.plus(newSessionExpireSeconds, ChronoUnit.SECONDS);
 
-        Map<String, Object> config = new LinkedHashMap<>();
-        config.put("sessionResumption", Map.of());
-        config.put("responseModalities", List.of("AUDIO"));
-        config.put("inputAudioTranscription", Map.of());
-        config.put("outputAudioTranscription", Map.of());
-        config.put("realtimeInputConfig", Map.of("automaticActivityDetection", Map.of("disabled", true)));
-        config.put("contextWindowCompression", Map.of("slidingWindow", Map.of()));
-        if (systemInstruction != null && !systemInstruction.isBlank()) {
-            config.put("systemInstruction", Map.of("parts", List.of(Map.of("text", systemInstruction))));
-        }
+        Map<String, Object> setup = new LinkedHashMap<>();
+        setup.put("model", model.startsWith("models/") ? model : "models/" + model);
+        setup.put("generationConfig", Map.of("responseModalities", List.of("AUDIO")));
+        setup.put("inputAudioTranscription", Map.of());
+        setup.put("outputAudioTranscription", Map.of());
+        setup.put("realtimeInputConfig", Map.of("automaticActivityDetection", Map.of("disabled", true)));
+        setup.put("contextWindowCompression", Map.of("slidingWindow", Map.of()));
 
-        Map<String, Object> constraints = new LinkedHashMap<>();
-        constraints.put("model", model.startsWith("models/") ? model : "models/" + model);
-        constraints.put("config", config);
+        List<String> lockedFields = new java.util.ArrayList<>(List.of(
+                "model",
+                "generationConfig",
+                "inputAudioTranscription",
+                "outputAudioTranscription",
+                "realtimeInputConfig",
+                "contextWindowCompression"
+        ));
+        if (systemInstruction != null && !systemInstruction.isBlank()) {
+            setup.put("systemInstruction", Map.of("parts", List.of(Map.of("text", systemInstruction))));
+            lockedFields.add("systemInstruction");
+        }
 
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("uses", 1);
         request.put("expireTime", expiresAt.truncatedTo(ChronoUnit.SECONDS).toString());
         request.put("newSessionExpireTime", newSessionExpiresAt.truncatedTo(ChronoUnit.SECONDS).toString());
-        request.put("liveConnectConstraints", constraints);
+        request.put("bidiGenerateContentSetup", setup);
+        request.put("fieldMask", String.join(",", lockedFields));
 
         try {
             Map<String, Object> result = restClient.post().uri(tokenUrl)
