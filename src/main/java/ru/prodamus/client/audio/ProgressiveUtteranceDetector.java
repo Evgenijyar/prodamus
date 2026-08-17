@@ -17,7 +17,6 @@ public final class ProgressiveUtteranceDetector {
     private static final int BYTES_PER_SECOND = 32_000;
     private static final int PRE_ROLL_BYTES = 6_400;
     private static final int MIN_SEGMENT_BYTES = 4_800;
-    private static final int MAX_UTTERANCE_BYTES = 960_000;
 
     private final SpeakerRole role;
     private final int threshold;
@@ -31,7 +30,7 @@ public final class ProgressiveUtteranceDetector {
     private int preRollBytes;
     private int silenceBytes;
     private int segmentVoiceBytes;
-    private int utteranceBytes;
+    private long utteranceBytes;
     private int segmentIndex;
     private long utteranceSequence;
     private long currentUtteranceId;
@@ -76,7 +75,7 @@ public final class ProgressiveUtteranceDetector {
         utteranceBytes += pcm.length;
         if (voice) segmentVoiceBytes += pcm.length;
         silenceBytes = voice ? 0 : silenceBytes + pcm.length;
-        if (silenceBytes >= silenceBytesRequired || utteranceBytes >= MAX_UTTERANCE_BYTES) {
+        if (silenceBytes >= silenceBytesRequired) {
             finish();
         } else {
             emitIfThresholdReached();
@@ -98,7 +97,8 @@ public final class ProgressiveUtteranceDetector {
         if (segmentVoiceBytes > 0 && segment.size() >= MIN_SEGMENT_BYTES) {
             emit(true);
         } else if (segmentIndex > 0) {
-            consumer.accept(new SpeechSegment(role, currentUtteranceId, segmentIndex, true, new byte[0]));
+            consumer.accept(new SpeechSegment(role, currentUtteranceId, segmentIndex, true,
+                    utteranceBytes, new byte[0]));
         }
         segment.reset();
         speaking = false;
@@ -114,7 +114,8 @@ public final class ProgressiveUtteranceDetector {
         log.info("Progressive VAD segment: role={}, utterance={}, index={}, final={}, durationMs={}",
                 role, currentUtteranceId, segmentIndex, finalSegment,
                 audio.length * 1000L / BYTES_PER_SECOND);
-        consumer.accept(new SpeechSegment(role, currentUtteranceId, segmentIndex, finalSegment, audio));
+        consumer.accept(new SpeechSegment(role, currentUtteranceId, segmentIndex, finalSegment,
+                utteranceBytes, audio));
         segmentIndex++;
         segmentVoiceBytes = 0;
     }
@@ -139,7 +140,7 @@ public final class ProgressiveUtteranceDetector {
     }
 
     public record SpeechSegment(SpeakerRole role, long utteranceId, int segmentIndex,
-                                boolean finalSegment, byte[] audio) {
+                                boolean finalSegment, long cumulativeAudioBytes, byte[] audio) {
         public boolean firstSegment() { return segmentIndex == 0; }
     }
 }

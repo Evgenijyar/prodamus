@@ -14,6 +14,7 @@ import ru.prodamus.client.audio.WindowsAudioService;
 import ru.prodamus.client.config.AppSettings;
 import ru.prodamus.client.gemini.GeminiEventListener;
 import ru.prodamus.client.gemini.GeminiLiveClient;
+import ru.prodamus.client.gemini.GeminiLiveClient.TurnResult;
 import ru.prodamus.client.server.BackendClient;
 import ru.prodamus.client.server.BackendClient.PredictiveSessionBundle;
 
@@ -42,6 +43,7 @@ public class AssistantCoordinator {
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicLong forecastSequence = new AtomicLong();
     private final AtomicLong conversationSequence = new AtomicLong();
+    private final AtomicLong managerTurnSequence = new AtomicLong();
     private final AtomicReference<ForecastSnapshot> latestForecast = new AtomicReference<>();
     private final AtomicReference<RecommendationTurn> activeRecommendation = new AtomicReference<>();
 
@@ -125,16 +127,18 @@ public class AssistantCoordinator {
         GeminiLiveClient visible = recommender;
         GeminiLiveClient hidden = forecaster;
         if (visible == null || hidden == null) return;
+        long turnId = managerTurnSequence.incrementAndGet();
+        String control = control(role, turnId, 0, "MANAGER_COMPLETE", audio.length, "");
         recommenderSender.execute(() -> {
             if (!isCurrent(visible, true)) return;
             activeRecommendation.set(null);
             try {
-                visible.sendUtteranceAndAwait(role, audio, "");
+                visible.sendUtteranceAndAwait(role, audio, control);
             } catch (Throwable throwable) {
                 fail(throwable);
             }
         });
-        forecasterSender.execute(() -> sendAudioIfCurrent(hidden, role, audio, false));
+        forecasterSender.execute(() -> sendAudioIfCurrent(hidden, role, audio, control, false));
     }
 
     private void sendCustomerSegment(SpeechSegment segment) {
@@ -145,6 +149,13 @@ public class AssistantCoordinator {
 
         long displayUtteranceId = (conversationId << 32) | (segment.utteranceId() & 0xffff_ffffL);
         SuggestionKind kind = segment.finalSegment() ? SuggestionKind.FINAL : SuggestionKind.HYPOTHESIS;
+        String phase = segment.finalSegment() ? "CLIENT_FINAL"
+                : segment.firstSegment() ? "CLIENT_EARLY" : "CLIENT_CONTINUATION";
+        String forecast = segment.firstSegment() ? takeLatestForecastContext() : "";
+        String recommendationControl = control(segment.role(), displayUtteranceId, segment.segmentIndex(), phase,
+                segment.cumulativeAudioBytes(), forecast);
+        String forecastControl = control(segment.role(), displayUtteranceId, segment.segmentIndex(), phase,
+                segment.cumulativeAudioBytes(), "");
         log.info("Customer progressive segment: utterance={}, index={}, final={}, bytes={}",
                 segment.utteranceId(), segment.segmentIndex(), segment.finalSegment(), segment.audio().length);
 
@@ -152,26 +163,56 @@ public class AssistantCoordinator {
             try {
                 if (!isCurrent(visible, true)) return;
                 activeRecommendation.set(new RecommendationTurn(displayUtteranceId, kind));
-                visible.sendUtteranceAndAwait(segment.role(), segment.audio(),
-                        recommendationContext(segment, takeLatestForecastContext()));
+                TurnResult result = visible.sendUtteranceAndAwait(segment.role(), segment.audio(),
+                        recommendationControl);
+                if (segment.finalSegment()) ensureFinalRecommendation(visible, segment, displayUtteranceId, result);
             } catch (Throwable throwable) {
                 fail(throwable);
             } finally {
                 activeRecommendation.set(null);
             }
         });
-        if (segment.audio().length > 0) {
-            forecasterSender.execute(() -> sendAudioIfCurrent(hidden, segment.role(), segment.audio(), false));
-        }
+        forecasterSender.execute(() -> sendAudioIfCurrent(hidden, segment.role(), segment.audio(),
+                forecastControl, false));
     }
 
-    private String recommendationContext(SpeechSegment segment, String forecast) {
-        String mode = segment.finalSegment()
-                ? "[РЕЖИМ ОТВЕТА: ИТОГ. Реплика клиента закончена. Добавь одну окончательную рекомендацию, "
-                    + "не повторяя и не отменяя ранее показанные гипотезы.]"
-                : "[РЕЖИМ ОТВЕТА: ГИПОТЕЗА. Это часть продолжающейся реплики. Дай одну законченную раннюю фразу; "
-                    + "последующие уточнения не должны обрывать эту фразу.]";
-        return forecast == null || forecast.isBlank() ? mode : forecast + "\n" + mode;
+    private String control(SpeakerRole role, long utteranceId, int segmentIndex, String phase,
+                           long cumulativeAudioBytes, String forecast) {
+        long cumulativeMillis = cumulativeAudioBytes * 1_000L / 32_000L;
+        StringBuilder value = new StringBuilder(256)
+                .append("[CONTROL]\n")
+                .append("speaker=").append(role.name()).append('\n')
+                .append("utterance_id=").append(utteranceId).append('\n')
+                .append("segment_index=").append(segmentIndex).append('\n')
+                .append("phase=").append(phase).append('\n')
+                .append("cumulative_audio_ms=").append(cumulativeMillis).append('\n')
+                .append("[/CONTROL]");
+        if (forecast != null && !forecast.isBlank()) value.append('\n').append(forecast);
+        return value.toString();
+    }
+
+    private void ensureFinalRecommendation(GeminiLiveClient target, SpeechSegment segment,
+                                           long displayUtteranceId, TurnResult initial) {
+        TurnResult result = initial;
+        for (int recovery = 1; recovery <= 2 && isCurrent(target, true)
+                && !SuggestionQuality.isCompleteRecommendation(result.text()); recovery++) {
+            log.warn("Final recommendation missing or incomplete: utterance={}, recovery={}, status={}, textChars={}",
+                    segment.utteranceId(), recovery, result.status(), result.text() == null ? 0 : result.text().length());
+            String recoveryControl = control(segment.role(), displayUtteranceId, segment.segmentIndex(),
+                    "CLIENT_FINAL_RECOVERY", segment.cumulativeAudioBytes(), "")
+                    + "\n[RECOVERY]\nПредыдущий итог отсутствовал или был оборван. "
+                    + "Верни одну полную готовую фразу менеджера по уже полученной реплике клиента.\n[/RECOVERY]";
+            result = target.sendUtteranceAndAwait(segment.role(), new byte[0], recoveryControl);
+        }
+        if (!SuggestionQuality.isCompleteRecommendation(result.text())) {
+            AssistantListener current = listener;
+            if (current != null) {
+                String fallback = "Уточните, пожалуйста, правильно ли я понял вашу основную мысль?";
+                current.onSuggestion(displayUtteranceId, SuggestionKind.FINAL, fallback, true);
+                log.error("Gemini did not produce a valid final recommendation after recovery: utterance={}",
+                        segment.utteranceId());
+            }
+        }
     }
 
     private String takeLatestForecastContext() {
@@ -183,10 +224,11 @@ public class AssistantCoordinator {
         return "[СКРЫТЫЙ ПРОГНОЗ #" + snapshot.version() + "]\n" + snapshot.text();
     }
 
-    private void sendAudioIfCurrent(GeminiLiveClient target, SpeakerRole role, byte[] audio, boolean visible) {
+    private void sendAudioIfCurrent(GeminiLiveClient target, SpeakerRole role, byte[] audio,
+                                    String context, boolean visible) {
         if (!isCurrent(target, visible)) return;
         try {
-            target.sendUtterance(role, audio);
+            target.sendUtteranceAndAwait(role, audio, context);
         } catch (Throwable throwable) {
             fail(throwable);
         }
@@ -268,6 +310,12 @@ public class AssistantCoordinator {
             AssistantListener current = listener;
             RecommendationTurn turn = activeRecommendation.get();
             if (current != null && turn != null) {
+                if (complete && turn.kind() == SuggestionKind.FINAL
+                        && !SuggestionQuality.isCompleteRecommendation(text)) {
+                    log.warn("Discarding incomplete final stream before recovery: utterance={}, chars={}",
+                            turn.utteranceId(), text == null ? 0 : text.length());
+                    return;
+                }
                 current.onSuggestion(turn.utteranceId(), turn.kind(), text, complete);
             }
         }

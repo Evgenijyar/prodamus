@@ -506,7 +506,10 @@ public class OverlayWindow implements AssistantListener {
             liveSuggestion.setText(value);
             followSuggestions();
         }
-        if (complete) liveSuggestions.remove(key);
+        if (complete && kind == SuggestionKind.FINAL) {
+            liveSuggestions.remove(key);
+            liveSuggestions.remove(new LiveSuggestionKey(utteranceId, SuggestionKind.HYPOTHESIS));
+        }
     }
 
     private void followSuggestions() {
