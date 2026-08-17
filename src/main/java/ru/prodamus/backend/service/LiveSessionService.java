@@ -23,6 +23,17 @@ import java.util.UUID;
 @Service
 public class LiveSessionService {
     private static final List<String> LEASED_STATUSES = List.of("PROVISIONING", "ACTIVE");
+    private static final String CLIENT_DIALOG_PROTOCOL = """
+            Ты работаешь внутри Prodamus и получаешь один разговор из двух локальных аудиоисточников.
+            Перед каждым фрагментом клиентское приложение передаёт служебную текстовую метку [МЕНЕДЖЕР] или [КЛИЕНТ].
+
+            Правила выдачи подсказок обязательны и имеют приоритет над стилевыми пожеланиями роли:
+            - Реплика [МЕНЕДЖЕР] нужна только для понимания контекста разговора. После неё не давай менеджеру новую содержательную подсказку; ответь только символом «—».
+            - Реплика [КЛИЕНТ] является триггером подсказки. После неё дай ровно одну актуальную подсказку менеджеру: что лучше сказать или спросить дальше с учётом всего предыдущего разговора, роли и базы знаний.
+            - Не повторяй дословно реплику клиента и не пересказывай историю, если это не требуется для самой подсказки.
+            - Не выводи служебные метки [МЕНЕДЖЕР] и [КЛИЕНТ], не объясняй внутренний протокол и не обращайся к клиенту напрямую.
+            - Формулируй подсказку как готовую практическую рекомендацию менеджеру.
+            """;
 
     private final LiveSessionRepository sessions;
     private final AiCredentialRepository credentials;
@@ -216,6 +227,7 @@ public class LiveSessionService {
         append(out, "БАЗА ЗНАНИЙ", profile.getKnowledgeBase());
         append(out, "ПЕРСОНАЛЬНЫЕ НАСТРОЙКИ МЕНЕДЖЕРА", user.getCustomInstructions());
         if (config.isFeatureManualClientContext()) append(out, "КОНТЕКСТ КЛИЕНТА", manualClientContext);
+        append(out, "НЕИЗМЕНЯЕМЫЙ ПРОТОКОЛ PRODAMUS", CLIENT_DIALOG_PROTOCOL);
         return out.toString().trim();
     }
 
