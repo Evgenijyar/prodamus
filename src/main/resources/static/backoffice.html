@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Prodamus — Back Office</title>
+    <link rel="stylesheet" href="/assets/backoffice.css?v=001">
+</head>
+<body>
+<div class="app-shell">
+    <header class="top-brand-header">
+        <div class="brand-header-inner">
+            <img class="top-brand-logo" src="/assets/prodamus-logo.png" alt="Продамус">
+            <div class="brand-divider"></div>
+            <div class="brand-subtitle"><span>BACK OFFICE</span><span>AI SALES ASSISTANT</span></div>
+        </div>
+        <div class="top-actions">
+            <span id="global-status" class="sync-indicator">Подключение…</span>
+            <span class="admin-chip">admin</span>
+            <button id="logout" class="btn btn-sm" type="button">Выйти</button>
+        </div>
+    </header>
+
+    <div class="app-layout">
+        <aside class="projects-panel">
+            <div class="panel-section-title">Пользователи</div>
+            <button id="btn-add-user" class="history-header" type="button"><span class="plus">＋</span><span>Добавить пользователя</span></button>
+            <div class="history-divider"></div>
+            <div id="user-list" class="history-list"></div>
+            <div class="history-divider"></div>
+            <div class="panel-section-title">Управление</div>
+            <nav id="system-nav" class="prodamus-system-nav">
+                <button class="system-nav-btn is-active" type="button" data-view="overview"><span>◫</span><b>Обзор</b></button>
+                <button class="system-nav-btn" type="button" data-view="prompts"><span>✦</span><b>Роли и промпты</b></button>
+                <button class="system-nav-btn" type="button" data-view="credentials"><span>⌁</span><b>AI-ключи</b></button>
+                <button class="system-nav-btn" type="button" data-view="sessions"><span>◉</span><b>Live-сессии</b></button>
+                <button class="system-nav-btn" type="button" data-view="system"><span>⚙</span><b>Система</b></button>
+                <button class="system-nav-btn" type="button" data-view="audit"><span>≡</span><b>Журнал</b></button>
+            </nav>
+        </aside>
+
+        <section class="workspace-panel">
+            <div class="dashboard-zone">
+                <main id="workspace" class="project-workspace">
+                    <div class="empty-state"><div class="prodamus-spinner"></div><p>Загружаем Prodamus…</p></div>
+                </main>
+            </div>
+        </section>
+    </div>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root" class="toast-root"></div>
+<script src="/assets/backoffice.js?v=001"></script>
+</body>
+</html>

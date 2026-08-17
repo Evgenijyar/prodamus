@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Prodamus — Back Office</title>
+    <link rel="stylesheet" href="/assets/backoffice.css?v=001">
+</head>
+<body class="login-body">
+<main class="login-shell prodamus-login-shell">
+    <img class="login-brand-logo" src="/assets/prodamus-logo.png" alt="Продамус — ИИ-ассистент продаж">
+    <div class="eyebrow">BACK OFFICE</div>
+    <h1>Управление Prodamus</h1>
+    <p>Пользователи, роли продаж, AI-ключи и активные сессии — в одном месте.</p>
+    <form id="login-form" class="login-form" autocomplete="on">
+        <div id="login-error" class="form-error d-none"></div>
+        <label>Логин
+            <input id="login" name="login" autocomplete="username" value="admin" required autofocus>
+        </label>
+        <label>Пароль
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button id="login-button" class="btn btn-save prodamus-primary" type="submit">Войти</button>
+    </form>
+</main>
+<script>
+const form=document.getElementById('login-form');
+const error=document.getElementById('login-error');
+const button=document.getElementById('login-button');
+form.addEventListener('submit',async e=>{
+  e.preventDefault(); error.classList.add('d-none'); button.disabled=true; button.textContent='Входим…';
+  try{
+    const r=await fetch('/api/admin/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({login:form.login.value.trim(),password:form.password.value})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.message||'Не удалось войти');
+    location.replace('/backoffice');
+  }catch(ex){ error.textContent=ex.message; error.classList.remove('d-none'); button.disabled=false; button.textContent='Войти'; }
+});
+</script>
+</body>
+</html>
