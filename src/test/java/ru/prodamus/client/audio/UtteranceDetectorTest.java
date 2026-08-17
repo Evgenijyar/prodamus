@@ -61,6 +61,43 @@ class UtteranceDetectorTest {
         assertThat(segments.stream().mapToInt(bytes -> bytes.length).sum()).isEqualTo(124_800);
     }
 
+    @Test
+    void activeSegmentsKeepOneUtteranceIdUntilFinalSilence() {
+        List<UtteranceDetector.SpeechSegment> segments = new ArrayList<>();
+        UtteranceDetector detector = new UtteranceDetector(
+                SpeakerRole.CUSTOMER, 500, 300, 1_000,
+                (java.util.function.Consumer<UtteranceDetector.SpeechSegment>) segments::add);
+
+        detector.accept(pcm(4_000, 16_000));
+        detector.accept(pcm(4_000, 16_000));
+        detector.accept(pcm(4_000, 16_000));
+        detector.accept(pcm(4_000, 8_000));
+        detector.accept(pcm(0, 9_600));
+
+        assertThat(segments).hasSizeGreaterThanOrEqualTo(2);
+        assertThat(segments).extracting(UtteranceDetector.SpeechSegment::utteranceId).containsOnly(1L);
+        assertThat(segments.getLast().finalSegment()).isTrue();
+        assertThat(segments.subList(0, segments.size() - 1))
+                .allMatch(segment -> !segment.finalSegment());
+    }
+
+    @Test
+    void emitsFinalBoundaryWhenSpeechEndedExactlyAtActiveSegmentBoundary() {
+        List<UtteranceDetector.SpeechSegment> segments = new ArrayList<>();
+        UtteranceDetector detector = new UtteranceDetector(
+                SpeakerRole.CUSTOMER, 500, 300, 1_000,
+                (java.util.function.Consumer<UtteranceDetector.SpeechSegment>) segments::add);
+
+        detector.accept(pcm(4_000, 6_400));
+        detector.accept(pcm(4_000, 25_600)); // ровно 1 секунда: активный фрагмент отправлен
+        detector.accept(pcm(0, 9_600));      // после него только финальная тишина
+
+        assertThat(segments).hasSize(2);
+        assertThat(segments.getFirst().finalSegment()).isFalse();
+        assertThat(segments.getLast().finalSegment()).isTrue();
+        assertThat(segments).extracting(UtteranceDetector.SpeechSegment::utteranceId).containsOnly(1L);
+    }
+
     private byte[] pcm(int amplitude, int length) {
         byte[] bytes = new byte[length];
         for (int i = 0; i + 1 < length; i += 2) {

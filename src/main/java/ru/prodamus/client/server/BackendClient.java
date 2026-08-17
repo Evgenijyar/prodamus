@@ -105,8 +105,8 @@ public class BackendClient {
         return sendAuthorized(request, Bootstrap.class);
     }
 
-    public LiveSessionDescriptor startLiveSession(long promptProfileId, String clientContext) {
-        StartSessionRequest body = new StartSessionRequest(promptProfileId, deviceId(), clientVersion, clientContext);
+    public LiveSessionDescriptor startLiveSession(long promptProfileId) {
+        StartSessionRequest body = new StartSessionRequest(promptProfileId, deviceId(), clientVersion, "");
         return authorizedPost("/api/client/live-sessions", body, LiveSessionDescriptor.class);
     }
 

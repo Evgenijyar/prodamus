@@ -15,7 +15,7 @@ try {
     & $mvnw clean package -DskipTests
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    $jar = Join-Path $PSScriptRoot "target\prodamus-client.jar"
+    $jar = Join-Path $PSScriptRoot "target\prodamus2-client.jar"
     if (-not (Test-Path $jar)) {
         throw "Maven build did not produce $jar."
     }
@@ -26,7 +26,7 @@ try {
     if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
     New-Item -ItemType Directory -Path $inputDir | Out-Null
     New-Item -ItemType Directory -Path $dist | Out-Null
-    Copy-Item $jar (Join-Path $inputDir "prodamus-client.jar")
+    Copy-Item $jar (Join-Path $inputDir "prodamus2-client.jar")
 
     $hasWix = (Get-Command candle.exe -ErrorAction SilentlyContinue) -and
               (Get-Command light.exe -ErrorAction SilentlyContinue)
@@ -37,12 +37,12 @@ try {
 
     $jpackageArgs = @(
         "--type", $packageType,
-        "--name", "Prodamus",
-        "--app-version", "1.4.0",
+        "--name", "Prodamus 2",
+        "--app-version", "2.0.0",
         "--vendor", "Prodamus",
         "--description", "AI sales assistant",
         "--input", $inputDir,
-        "--main-jar", "prodamus-client.jar",
+        "--main-jar", "prodamus2-client.jar",
         "--dest", $dist,
         "--java-options", "-Dfile.encoding=UTF-8"
     )
@@ -52,7 +52,7 @@ try {
     & $jpackage @jpackageArgs
 
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    Write-Host "Done. Prodamus installer is available in $dist" -ForegroundColor Green
+    Write-Host "Done. Prodamus 2 native package is available in $dist" -ForegroundColor Green
 }
 finally {
     Pop-Location

@@ -28,7 +28,8 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class GeminiLiveClient implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(GeminiLiveClient.class);
-    private static final int AUDIO_CHUNK_BYTES = 3_200;
+    private static final int AUDIO_CHUNK_BYTES = 1_280;
+    private static final long TURN_TIMEOUT_SECONDS = 20;
 
     private final ObjectMapper mapper;
     private final GeminiEventListener listener;
@@ -40,6 +41,7 @@ public final class GeminiLiveClient implements AutoCloseable {
     private final AtomicBoolean reconnecting = new AtomicBoolean();
     private final AtomicLong successfulReconnects = new AtomicLong();
     private final Object sendLock = new Object();
+    private final Object turnLock = new Object();
     private final Object connectionLock = new Object();
     private final Object suggestionLock = new Object();
     private final StringBuilder suggestion = new StringBuilder();
@@ -47,6 +49,7 @@ public final class GeminiLiveClient implements AutoCloseable {
     private volatile LiveSessionDescriptor descriptor;
     private volatile WebSocket socket;
     private volatile CountDownLatch readyLatch = new CountDownLatch(1);
+    private volatile TurnTracker activeTurn;
     private volatile String resumptionHandle = "";
     private volatile long sentAudioBytes;
     private volatile long sentMessages;
@@ -80,23 +83,36 @@ public final class GeminiLiveClient implements AutoCloseable {
         listener.onStatus("Слушаю звонок");
     }
 
-    public void sendUtterance(SpeakerRole role, byte[] pcm) {
-        if (pcm == null || pcm.length == 0 || !desiredOpen.get()) return;
-        while (desiredOpen.get()) {
+    public void sendUtteranceAndAwait(SpeakerRole role, byte[] pcm, String context) {
+        if (pcm == null || !desiredOpen.get()) return;
+        if (pcm.length == 0 && (context == null || context.isBlank())) return;
+        synchronized (turnLock) {
             if (!awaitReady()) return;
             WebSocket target = socket;
+            TurnTracker tracker = new TurnTracker();
+            activeTurn = tracker;
+            discardCurrentSuggestion();
             try {
-                sendUtterance(target, role, pcm);
-                return;
+                sendUtterance(target, role, pcm, context);
+                if (!tracker.completion.await(TURN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    log.warn("Gemini turn timed out after {} seconds; reconnecting before the next audio turn",
+                            TURN_TIMEOUT_SECONDS);
+                    connectionLost(target, "Gemini did not send turnComplete", null);
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
             } catch (RuntimeException exception) {
                 if (!desiredOpen.get()) return;
-                log.warn("Direct Gemini send failed; reconnecting immediately: {}", rootMessage(exception));
+                log.warn("Direct Gemini send failed; reconnecting without blind audio retry: {}",
+                        rootMessage(exception));
                 connectionLost(target, "Ошибка отправки в Gemini Live", exception);
+            } finally {
+                if (activeTurn == tracker) activeTurn = null;
             }
         }
     }
 
-    private void sendUtterance(WebSocket target, SpeakerRole role, byte[] pcm) {
+    private void sendUtterance(WebSocket target, SpeakerRole role, byte[] pcm, String context) {
         synchronized (sendLock) {
             requireCurrentConnection(target);
             log.info("Sending complete utterance directly to Gemini: role={}, bytes={}, durationMs={}",
@@ -104,8 +120,10 @@ public final class GeminiLiveClient implements AutoCloseable {
             listener.onStatus("Распознана реплика: " + role.label().toLowerCase());
             sendJson(target, mapper.createObjectNode().set("realtimeInput",
                     mapper.createObjectNode().set("activityStart", mapper.createObjectNode())));
+            String control = context == null || context.isBlank()
+                    ? "[CONTROL]\nspeaker=" + role.name() + "\n[/CONTROL]" : context.trim();
             sendJson(target, mapper.createObjectNode().set("realtimeInput",
-                    mapper.createObjectNode().put("text", "[" + role.label() + "]")));
+                    mapper.createObjectNode().put("text", control)));
             for (int offset = 0; offset < pcm.length; offset += AUDIO_CHUNK_BYTES) {
                 requireCurrentConnection(target);
                 int length = Math.min(AUDIO_CHUNK_BYTES, pcm.length - offset);
@@ -199,12 +217,20 @@ public final class GeminiLiveClient implements AutoCloseable {
         String normalized = model != null && model.startsWith("models/") ? model : "models/" + model;
         ObjectNode setup = mapper.createObjectNode();
         setup.put("model", normalized);
-        setup.set("generationConfig", mapper.createObjectNode()
-                .set("responseModalities", mapper.createArrayNode().add("AUDIO")));
+        ObjectNode generation = mapper.createObjectNode()
+                .set("responseModalities", mapper.createArrayNode().add("AUDIO"));
+        generation.put("temperature", 0.2);
+        generation.put("maxOutputTokens", 512);
+        generation.set("thinkingConfig", mapper.createObjectNode()
+                .put("thinkingLevel", "minimal").put("includeThoughts", false));
+        setup.set("generationConfig", generation);
         setup.set("inputAudioTranscription", mapper.createObjectNode());
         setup.set("outputAudioTranscription", mapper.createObjectNode());
         setup.set("realtimeInputConfig", mapper.createObjectNode()
                 .set("automaticActivityDetection", mapper.createObjectNode().put("disabled", true)));
+        ((ObjectNode) setup.get("realtimeInputConfig"))
+                .put("activityHandling", "NO_INTERRUPTION")
+                .put("turnCoverage", "TURN_INCLUDES_ONLY_ACTIVITY");
         setup.set("contextWindowCompression", mapper.createObjectNode()
                 .set("slidingWindow", mapper.createObjectNode()));
         ObjectNode resumption = mapper.createObjectNode();
@@ -217,6 +243,7 @@ public final class GeminiLiveClient implements AutoCloseable {
         if (!desiredOpen.get() || source == null || source != socket) return;
         if (!connected.getAndSet(false) && reconnecting.get()) return;
         freezeCurrentSuggestion();
+        finishActiveTurn();
         readyLatch = new CountDownLatch(1);
         if (!reconnecting.compareAndSet(false, true)) return;
 
@@ -309,18 +336,22 @@ public final class GeminiLiveClient implements AutoCloseable {
             String input = content.path("inputTranscription").path("text").asText("");
             if (!input.isBlank()) listener.onTranscript(input);
 
-            String output = content.path("outputTranscription").path("text").asText("");
+            String output = extractOutputText(content);
             if (!output.isBlank()) {
                 String current;
                 synchronized (suggestionLock) {
-                    suggestion.append(output);
+                    mergeTranscript(suggestion, output);
                     current = suggestion.toString().trim();
                 }
                 listener.onSuggestion(current, false);
             }
-            if (content.path("interrupted").asBoolean(false)) freezeCurrentSuggestion();
+            if (content.path("interrupted").asBoolean(false)) {
+                freezeCurrentSuggestion();
+                finishActiveTurn();
+            }
             if (content.path("turnComplete").asBoolean(false)) {
                 freezeCurrentSuggestion();
+                finishActiveTurn();
                 listener.onStatus("Слушаю звонок");
             }
         } catch (Throwable exception) {
@@ -340,12 +371,67 @@ public final class GeminiLiveClient implements AutoCloseable {
         }
     }
 
+    private String discardCurrentSuggestion() {
+        synchronized (suggestionLock) {
+            String discarded = suggestion.toString().trim();
+            suggestion.setLength(0);
+            return discarded;
+        }
+    }
+
+    private void finishActiveTurn() {
+        TurnTracker tracker = activeTurn;
+        if (tracker != null) tracker.completion.countDown();
+    }
+
+    private String extractOutputText(JsonNode content) {
+        String transcription = content.path("outputTranscription").path("text").asText("");
+        if (!transcription.isBlank()) return transcription;
+        StringBuilder text = new StringBuilder();
+        JsonNode parts = content.path("modelTurn").path("parts");
+        if (parts.isArray()) {
+            for (JsonNode part : parts) {
+                if (part.path("thought").asBoolean(false)) continue;
+                String value = part.path("text").asText("");
+                if (!value.isBlank()) text.append(value);
+            }
+        }
+        return text.toString();
+    }
+
+    static String mergeTranscript(String current, String chunk) {
+        StringBuilder value = new StringBuilder(current == null ? "" : current);
+        mergeTranscript(value, chunk);
+        return value.toString();
+    }
+
+    private static void mergeTranscript(StringBuilder target, String chunk) {
+        if (chunk == null || chunk.isEmpty()) return;
+        String current = target.toString();
+        if (current.equals(chunk) || current.endsWith(chunk)) return;
+        if (chunk.startsWith(current) && chunk.length() > current.length()) {
+            target.setLength(0);
+            target.append(chunk);
+            return;
+        }
+        int max = Math.min(current.length(), chunk.length());
+        int overlap = 0;
+        for (int length = max; length > 0; length--) {
+            if (current.regionMatches(current.length() - length, chunk, 0, length)) {
+                overlap = length;
+                break;
+            }
+        }
+        target.append(chunk, overlap, chunk.length());
+    }
+
     @Override
     public void close() {
         boolean wasConnected = connected.getAndSet(false);
         desiredOpen.set(false);
         reconnecting.set(false);
         readyLatch.countDown();
+        finishActiveTurn();
         reconnectExecutor.shutdownNow();
         WebSocket active = socket;
         socket = null;
@@ -360,6 +446,10 @@ public final class GeminiLiveClient implements AutoCloseable {
 
     long successfulReconnects() {
         return successfulReconnects.get();
+    }
+
+    private static final class TurnTracker {
+        private final CountDownLatch completion = new CountDownLatch(1);
     }
 
     boolean hasResumptionHandle() {

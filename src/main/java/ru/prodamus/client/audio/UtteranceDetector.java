@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 public final class UtteranceDetector {
     private static final Logger log = LoggerFactory.getLogger(UtteranceDetector.class);
@@ -19,22 +20,32 @@ public final class UtteranceDetector {
     private final int threshold;
     private final int silenceBytesRequired;
     private final int segmentBytesRequired;
-    private final BiConsumer<SpeakerRole, byte[]> utteranceConsumer;
+    private final Consumer<SpeechSegment> utteranceConsumer;
     private final Deque<byte[]> preRoll = new ArrayDeque<>();
     private final ByteArrayOutputStream utterance = new ByteArrayOutputStream();
     private int preRollBytes;
     private int silenceBytes;
     private int segmentVoiceBytes;
     private boolean speaking;
+    private boolean activeSegmentEmitted;
     private double peakRms;
+    private long utteranceSequence;
+    private long currentUtteranceId;
 
     public UtteranceDetector(SpeakerRole role, int threshold, int silenceMillis,
                              BiConsumer<SpeakerRole, byte[]> utteranceConsumer) {
-        this(role, threshold, silenceMillis, 0, utteranceConsumer);
+        this(role, threshold, silenceMillis, 0,
+                segment -> utteranceConsumer.accept(segment.role(), segment.audio()));
     }
 
     public UtteranceDetector(SpeakerRole role, int threshold, int silenceMillis, int segmentMillis,
                              BiConsumer<SpeakerRole, byte[]> utteranceConsumer) {
+        this(role, threshold, silenceMillis, segmentMillis,
+                segment -> utteranceConsumer.accept(segment.role(), segment.audio()));
+    }
+
+    public UtteranceDetector(SpeakerRole role, int threshold, int silenceMillis, int segmentMillis,
+                             Consumer<SpeechSegment> utteranceConsumer) {
         this.role = role;
         this.threshold = threshold;
         this.silenceBytesRequired = Math.max(9_600, BYTES_PER_SECOND * silenceMillis / 1_000);
@@ -54,6 +65,8 @@ public final class UtteranceDetector {
             addPreRoll(pcm);
             if (voice) {
                 speaking = true;
+                currentUtteranceId = ++utteranceSequence;
+                activeSegmentEmitted = false;
                 peakRms = currentRms;
                 log.debug("VAD speech started: role={}, rms={}, preRollBytes={}", role,
                         Math.round(currentRms), preRollBytes);
@@ -92,16 +105,18 @@ public final class UtteranceDetector {
         speaking = false;
         silenceBytes = 0;
         long durationMs = data.length * 1000L / BYTES_PER_SECOND;
-        if (segmentVoiceBytes > 0 && data.length >= MIN_UTTERANCE_BYTES) {
+        if ((segmentVoiceBytes > 0 && data.length >= MIN_UTTERANCE_BYTES) || activeSegmentEmitted) {
             log.info("VAD utterance complete: role={}, bytes={}, durationMs={}, peakRms={}",
                     role, data.length, durationMs, Math.round(peakRms));
-            utteranceConsumer.accept(role, data);
+            utteranceConsumer.accept(new SpeechSegment(role, currentUtteranceId, true, data));
         } else {
             log.debug("VAD utterance ignored as too short: role={}, bytes={}, durationMs={}",
                     role, data.length, durationMs);
         }
         segmentVoiceBytes = 0;
+        activeSegmentEmitted = false;
         peakRms = 0;
+        currentUtteranceId = 0;
     }
 
     private void emitSegment() {
@@ -110,7 +125,8 @@ public final class UtteranceDetector {
         if (segmentVoiceBytes > 0 && data.length >= MIN_UTTERANCE_BYTES) {
             log.info("VAD active-listening segment: role={}, bytes={}, durationMs={}",
                     role, data.length, data.length * 1000L / BYTES_PER_SECOND);
-            utteranceConsumer.accept(role, data);
+            utteranceConsumer.accept(new SpeechSegment(role, currentUtteranceId, false, data));
+            activeSegmentEmitted = true;
         }
         segmentVoiceBytes = 0;
         peakRms = 0;
@@ -133,5 +149,11 @@ public final class UtteranceDetector {
             sum += (double) sample * sample;
         }
         return Math.sqrt(sum / samples);
+    }
+
+    public record SpeechSegment(SpeakerRole role, long utteranceId, boolean finalSegment, byte[] audio) {
+        public SpeechSegment {
+            audio = audio == null ? new byte[0] : audio;
+        }
     }
 }

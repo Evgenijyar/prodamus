@@ -12,9 +12,9 @@
     </parent>
 
     <groupId>ru.prodamus.client</groupId>
-    <artifactId>prodamus-client</artifactId>
-    <version>1.4.0</version>
-    <name>Prodamus</name>
+    <artifactId>prodamus2-client</artifactId>
+    <version>2.0.0</version>
+    <name>Prodamus 2</name>
     <description>Prodamus native Windows AI sales assistant</description>
 
     <properties>
@@ -51,7 +51,7 @@
     </dependencies>
 
     <build>
-        <finalName>prodamus-client</finalName>
+        <finalName>prodamus2-client</finalName>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
