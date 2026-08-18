@@ -245,7 +245,8 @@ public class BackendClient {
                               boolean updateRequired, boolean updateAvailable) {}
     public record StartSessionRequest(long promptProfileId, String deviceId, String clientVersion, String clientContext) {}
     public record LiveSessionDescriptor(UUID sessionId, String ephemeralToken, Instant tokenExpiresAt,
-                                        Instant newSessionExpiresAt, String websocketUrl, String model) {}
+                                         Instant newSessionExpiresAt, String websocketUrl, String model,
+                                         String systemInstruction) {}
 
     public static final class BackendException extends RuntimeException {
         private final int statusCode;

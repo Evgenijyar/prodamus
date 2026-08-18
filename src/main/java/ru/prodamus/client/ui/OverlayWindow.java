@@ -24,7 +24,6 @@ import ru.prodamus.client.config.AppSettings;
 import ru.prodamus.client.config.SettingsService;
 import ru.prodamus.client.core.AssistantCoordinator;
 import ru.prodamus.client.core.AssistantListener;
-import ru.prodamus.client.core.SuggestionMerger;
 import ru.prodamus.client.server.BackendClient;
 import ru.prodamus.client.server.BackendClient.Bootstrap;
 import ru.prodamus.client.server.BackendClient.Role;
@@ -32,9 +31,7 @@ import ru.prodamus.client.windows.WindowsPrivacyService;
 
 import java.awt.Desktop;
 import java.net.URI;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.Executor;
 
 @Component
@@ -74,11 +71,6 @@ public class OverlayWindow implements AssistantListener {
     private boolean scrollListenerInstalled;
     private boolean autoFollow = true;
     private Label liveSuggestion;
-    private Label lastSuggestion;
-    private long liveResponseId = -1;
-    private String liveBaseText = "";
-    private final Map<Long, Label> suggestionGroups = new HashMap<>();
-    private final Map<Label, String> suggestionTexts = new java.util.IdentityHashMap<>();
     private double dragX;
     private double dragY;
     private ResizeEdge activeResizeEdge = ResizeEdge.NONE;
@@ -288,7 +280,7 @@ public class OverlayWindow implements AssistantListener {
         captureCheck.setOnAction(e -> {
             settings = new AppSettings(settings.microphoneDeviceId(), settings.loopbackDeviceId(), settings.vadThreshold(),
                     settings.silenceMillis(), captureCheck.isSelected(), settings.overlayOpacity(), false,
-                    settings.activeListening(), settings.activeListeningIntervalSeconds(), settings.lastRoleId());
+                    settings.lastRoleId());
             settingsService.save(settings);
             applyCaptureProtection();
         });
@@ -308,8 +300,7 @@ public class OverlayWindow implements AssistantListener {
                         ? null : new Tooltip(value.description()));
                 settings = new AppSettings(settings.microphoneDeviceId(), settings.loopbackDeviceId(),
                         settings.vadThreshold(), settings.silenceMillis(), settings.excludeFromCapture(),
-                        settings.overlayOpacity(), false, settings.activeListening(),
-                        settings.activeListeningIntervalSeconds(), value.id());
+                        settings.overlayOpacity(), false, value.id());
                 settingsService.save(settings);
             });
             roleListenerInstalled = true;
@@ -442,8 +433,7 @@ public class OverlayWindow implements AssistantListener {
         new SettingsDialog(stage, settings, audioService).showAndWait().ifPresent(updated -> {
             settings = new AppSettings(updated.microphoneDeviceId(), updated.loopbackDeviceId(),
                     updated.vadThreshold(), updated.silenceMillis(), updated.excludeFromCapture(),
-                    updated.overlayOpacity(), false, updated.activeListening(),
-                    updated.activeListeningIntervalSeconds(), updated.lastRoleId());
+                    updated.overlayOpacity(), false, updated.lastRoleId());
             settingsService.save(settings);
             stage.setOpacity(settings.overlayOpacity());
             captureCheck.setSelected(settings.excludeFromCapture());
@@ -463,11 +453,6 @@ public class OverlayWindow implements AssistantListener {
 
     private void clearSuggestions() {
         liveSuggestion = null;
-        lastSuggestion = null;
-        liveResponseId = -1;
-        liveBaseText = "";
-        suggestionGroups.clear();
-        suggestionTexts.clear();
         suggestionsBox.getChildren().setAll(emptySuggestions);
         emptySuggestions.setVisible(true);
         emptySuggestions.setManaged(true);
@@ -508,72 +493,17 @@ public class OverlayWindow implements AssistantListener {
         return body;
     }
 
-    private void updateSuggestion(long utteranceId, long responseId, boolean utteranceFinal,
-                                  String text, boolean complete) {
+    private void updateSuggestion(String text, boolean complete) {
         if (text == null || text.isBlank()) return;
         String value = text.trim();
         if ("—".equals(value) || "-".equals(value)) {
-            if (complete) finishLiveResponse();
+            if (complete) liveSuggestion = null;
             return;
         }
-
-        if (liveResponseId != responseId) {
-            liveResponseId = responseId;
-            liveSuggestion = suggestionGroups.get(utteranceId);
-            if (liveSuggestion == null && lastSuggestion != null
-                    && SuggestionMerger.related(suggestionTexts.get(lastSuggestion), value)) {
-                liveSuggestion = lastSuggestion;
-                suggestionGroups.put(utteranceId, liveSuggestion);
-            }
-            liveBaseText = liveSuggestion == null ? "" : suggestionTexts.getOrDefault(liveSuggestion, "");
-            if (liveSuggestion == null) {
-                liveSuggestion = addSuggestionCard(value);
-                suggestionGroups.put(utteranceId, liveSuggestion);
-            }
-        }
-
-        String merged = SuggestionMerger.merge(liveBaseText, value, complete);
-        liveSuggestion.setText(merged);
-        suggestionTexts.put(liveSuggestion, merged);
+        if (liveSuggestion == null) liveSuggestion = addSuggestionCard(value);
+        liveSuggestion.setText(value);
         followSuggestions();
-
-        if (complete) {
-            if (utteranceFinal && !SuggestionMerger.completeThought(merged)) {
-                if (!liveBaseText.isBlank()) {
-                    liveSuggestion.setText(liveBaseText);
-                    suggestionTexts.put(liveSuggestion, liveBaseText);
-                } else {
-                    removeSuggestionCard(liveSuggestion);
-                }
-            } else {
-                lastSuggestion = liveSuggestion;
-            }
-            finishLiveResponse();
-        }
-    }
-
-    private void finishLiveResponse() {
-        liveSuggestion = null;
-        liveResponseId = -1;
-        liveBaseText = "";
-    }
-
-    private void removeSuggestionCard(Label label) {
-        if (label == null) return;
-        suggestionGroups.entrySet().removeIf(entry -> entry.getValue() == label);
-        suggestionTexts.remove(label);
-        if (lastSuggestion == label) lastSuggestion = null;
-        javafx.scene.Node card = label.getParent();
-        int index = suggestionsBox.getChildren().indexOf(card);
-        if (index >= 0) suggestionsBox.getChildren().remove(index);
-        if (index > 0 && index - 1 < suggestionsBox.getChildren().size()
-                && suggestionsBox.getChildren().get(index - 1) instanceof Separator) {
-            suggestionsBox.getChildren().remove(index - 1);
-        } else if (index >= 0 && index < suggestionsBox.getChildren().size()
-                && suggestionsBox.getChildren().get(index) instanceof Separator) {
-            suggestionsBox.getChildren().remove(index);
-        }
-        if (suggestionTexts.isEmpty()) suggestionsBox.getChildren().setAll(emptySuggestions);
+        if (complete) liveSuggestion = null;
     }
 
     private void followSuggestions() {
@@ -732,17 +662,11 @@ public class OverlayWindow implements AssistantListener {
             roleBox.setDisable(running);
             if (running) {
                 liveSuggestion = null;
-                lastSuggestion = null;
-                liveResponseId = -1;
-                liveBaseText = "";
                 if (suggestionsBox.getChildren().contains(emptySuggestions)) {
                     setEmptySuggestionsText("Слушаю разговор…");
                 }
             } else if (bootstrap != null) {
                 liveSuggestion = null;
-                lastSuggestion = null;
-                liveResponseId = -1;
-                liveBaseText = "";
                 startStop.setDisable(bootstrap.roles().isEmpty() || bootstrap.version().updateRequired());
             }
         });
@@ -751,9 +675,8 @@ public class OverlayWindow implements AssistantListener {
     @Override public void onStatus(String value) { Platform.runLater(() -> setStatus(value)); }
 
     @Override
-    public void onSuggestion(long utteranceId, long responseId, boolean utteranceFinal,
-                             String text, boolean complete) {
-        Platform.runLater(() -> updateSuggestion(utteranceId, responseId, utteranceFinal, text, complete));
+    public void onSuggestion(String text, boolean complete) {
+        Platform.runLater(() -> updateSuggestion(text, complete));
     }
 
     @Override

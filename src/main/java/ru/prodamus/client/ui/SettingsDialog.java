@@ -27,8 +27,6 @@ final class SettingsDialog {
     private final ComboBox<AudioDevice> loopback = new ComboBox<>();
     private final Spinner<Integer> threshold = new Spinner<>(100, 5000, 550, 50);
     private final Spinner<Integer> silence = new Spinner<>(300, 2500, 700, 100);
-    private final CheckBox activeListening = new CheckBox("Реагировать, пока клиент продолжает говорить");
-    private final Spinner<Integer> activeListeningInterval = new Spinner<>(2, 15, 3, 1);
     private final Slider opacity = new Slider(0.65, 1.0, 0.96);
     private final Label deviceStatus = new Label("Загрузка аудиоустройств…");
     private final AppSettings original;
@@ -79,16 +77,10 @@ final class SettingsDialog {
         grid.add(threshold, 1, row++);
         grid.add(new Label("Конец реплики, мс"), 0, row);
         grid.add(silence, 1, row++);
-        grid.add(new Separator(), 0, row++, 2, 1);
-        grid.add(new Label("Активное слушание"), 0, row);
-        grid.add(activeListening, 1, row++);
-        grid.add(new Label("Интервал реакции, сек"), 0, row);
-        grid.add(activeListeningInterval, 1, row++);
         grid.add(new Label("Прозрачность окна"), 0, row);
         grid.add(opacity, 1, row++);
 
-        activeListeningInterval.disableProperty().bind(activeListening.selectedProperty().not());
-        Label note = new Label("Активное слушание позволяет обновлять рекомендацию, пока клиент продолжает говорить. Похожие продолжения одной мысли объединяются локально в одну карточку. При выключенной функции рекомендация формируется после окончания реплики.\n\nAI-ключ, модель, роль, промпт и база знаний управляются централизованно на сервере.");
+        Label note = new Label("Реплики менеджера и клиента обрабатываются по той же схеме, что в SalesHelper. AI-ключ, модель, роль, промпт и база знаний загружаются с сервера перед разговором.");
         note.setWrapText(true);
         note.getStyleClass().add("settings-note");
         grid.add(note, 0, row, 2, 1);
@@ -98,8 +90,6 @@ final class SettingsDialog {
     private void populate(AppSettings settings) {
         threshold.getValueFactory().setValue(settings.vadThreshold());
         silence.getValueFactory().setValue(settings.silenceMillis());
-        activeListening.setSelected(settings.activeListening());
-        activeListeningInterval.getValueFactory().setValue(settings.activeListeningIntervalSeconds());
         opacity.setValue(settings.overlayOpacity());
     }
 
@@ -139,7 +129,6 @@ final class SettingsDialog {
                 mic == null ? original.microphoneDeviceId() : mic.id(),
                 output == null ? original.loopbackDeviceId() : output.id(),
                 threshold.getValue(), silence.getValue(), original.excludeFromCapture(), opacity.getValue(),
-                original.expandedPreferred(), activeListening.isSelected(), activeListeningInterval.getValue(),
-                original.lastRoleId());
+                original.expandedPreferred(), original.lastRoleId());
     }
 }

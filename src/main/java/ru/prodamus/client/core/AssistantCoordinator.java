@@ -8,7 +8,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import ru.prodamus.client.audio.SpeakerRole;
 import ru.prodamus.client.audio.UtteranceDetector;
-import ru.prodamus.client.audio.UtteranceDetector.SpeechSegment;
 import ru.prodamus.client.audio.WindowsAudioService;
 import ru.prodamus.client.config.AppSettings;
 import ru.prodamus.client.gemini.GeminiEventListener;
@@ -20,9 +19,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
+/** SalesHelper conversation pipeline with Prodamus authentication and reconnect. */
 @Service
 public class AssistantCoordinator {
     private static final Logger log = LoggerFactory.getLogger(AssistantCoordinator.class);
@@ -33,10 +31,10 @@ public class AssistantCoordinator {
     private final Executor executor;
     private final ExecutorService utteranceSender = Executors.newSingleThreadExecutor(
             Thread.ofPlatform().name("gemini-utterance-sender").daemon(true).factory());
+    private final ExecutorService reconnectExecutor = Executors.newSingleThreadExecutor(
+            Thread.ofPlatform().name("gemini-reconnect").daemon(true).factory());
     private final AtomicBoolean running = new AtomicBoolean();
-    private final AtomicLong conversationSequence = new AtomicLong();
-    private final AtomicLong responseSequence = new AtomicLong();
-    private final AtomicReference<SuggestionScope> activeSuggestion = new AtomicReference<>();
+    private final AtomicBoolean reconnecting = new AtomicBoolean();
 
     private volatile GeminiLiveClient gemini;
     private volatile WindowsAudioService.WasapiCapture microphone;
@@ -44,7 +42,7 @@ public class AssistantCoordinator {
     private volatile UtteranceDetector microphoneDetector;
     private volatile UtteranceDetector loopbackDetector;
     private volatile AssistantListener listener;
-    private volatile long conversationId;
+    private volatile long promptProfileId;
 
     public AssistantCoordinator(WindowsAudioService audioService, BackendClient backend, ObjectMapper mapper,
                                 @Qualifier("assistantExecutor") Executor executor) {
@@ -55,37 +53,25 @@ public class AssistantCoordinator {
     }
 
     public void start(AppSettings settings, long promptProfileId, AssistantListener listener) {
-        if (!running.compareAndSet(false, true)) {
-            log.warn("Start ignored: assistant is already running");
-            return;
-        }
+        if (!running.compareAndSet(false, true)) return;
         this.listener = listener;
-        conversationId = conversationSequence.incrementAndGet();
-        activeSuggestion.set(null);
+        this.promptProfileId = promptProfileId;
+        reconnecting.set(false);
         listener.onRunningChanged(true);
-        listener.onStatus("Получаю ключ Gemini…");
-        executor.execute(() -> doStart(settings, promptProfileId));
+        executor.execute(() -> doStart(settings));
     }
 
-    private void doStart(AppSettings settings, long promptProfileId) {
+    private void doStart(AppSettings settings) {
         try {
-            validate(settings, promptProfileId);
+            if (promptProfileId <= 0) throw new IllegalArgumentException("Выберите роль перед стартом разговора");
+            gemini = openGeminiSession();
 
-            // Единственный серверный запрос, относящийся к разговору: backend проверяет
-            // пользователя и роль, затем выдаёт ограниченный временный ключ Gemini.
-            LiveSessionDescriptor descriptor = backend.startLiveSession(promptProfileId);
-
-            // После получения ключа весь разговор идёт напрямую из Windows-клиента
-            // в Gemini Live. Backend больше не участвует в активной сессии.
-            gemini = new GeminiLiveClient(mapper, new GeminiEvents());
-            gemini.connect(descriptor);
-
+            // Эти четыре строки повторяют исходную схему SalesHelper: два независимых
+            // VAD, одна очередь реплик и никакой дополнительной маршрутизации.
             microphoneDetector = new UtteranceDetector(SpeakerRole.MANAGER, settings.vadThreshold(),
-                    settings.silenceMillis(), 0, this::sendSegment);
-            int customerSegmentMillis = settings.activeListening()
-                    ? settings.activeListeningIntervalSeconds() * 1_000 : 0;
+                    settings.silenceMillis(), this::sendUtterance);
             loopbackDetector = new UtteranceDetector(SpeakerRole.CUSTOMER, settings.vadThreshold(),
-                    settings.silenceMillis(), customerSegmentMillis, this::sendSegment);
+                    settings.silenceMillis(), this::sendUtterance);
             microphone = audioService.captureMicrophone(settings.microphoneDeviceId(),
                     microphoneDetector::accept, this::fail);
             loopback = audioService.captureLoopback(settings.loopbackDeviceId(),
@@ -93,65 +79,112 @@ public class AssistantCoordinator {
             microphone.start();
             loopback.start();
             listener.onStatus("Слушаю звонок");
-            log.info("Prodamus started: backend detached, activeListening={}, customerSegmentMs={}",
-                    settings.activeListening(), customerSegmentMillis);
+            log.info("Prodamus started with the original SalesHelper conversation pipeline");
         } catch (Throwable throwable) {
             fail(throwable);
         }
     }
 
-    private void sendSegment(SpeechSegment segment) {
-        GeminiLiveClient active = gemini;
-        if (segment == null) return;
-        SpeakerRole role = segment.role();
-        byte[] audio = segment.audio();
-        if (!running.get() || active == null || audio == null) return;
-        // После активных фрагментов финальная граница может состоять только из тишины
-        // либо вообще не содержать аудио при принудительном flush. CONTROL всё равно
-        // обязан дойти до Gemini, иначе итоговая рекомендация не будет сформирована.
-        if (audio.length == 0 && !segment.finalSegment()) return;
-        long utteranceId = (conversationId << 32) | (segment.utteranceId() & 0xffff_ffffL);
-        long responseId = responseSequence.incrementAndGet();
-        String phase = role == SpeakerRole.MANAGER ? "MANAGER_COMPLETE"
-                : segment.finalSegment() ? "CLIENT_FINAL" : "CLIENT_ACTIVE";
-        String control = "[CONTROL]\n"
-                + "speaker=" + role.name() + "\n"
-                + "utterance_id=" + utteranceId + "\n"
-                + "response_id=" + responseId + "\n"
-                + "phase=" + phase + "\n"
-                + "[/CONTROL]";
-        SuggestionScope scope = role == SpeakerRole.CUSTOMER
-                ? new SuggestionScope(utteranceId, responseId, segment.finalSegment()) : null;
-        log.debug("Utterance queued: role={}, utterance={}, response={}, final={}, bytes={}",
-                role, utteranceId, responseId, segment.finalSegment(), audio.length);
-        utteranceSender.execute(() -> {
-            if (!running.get() || gemini != active) return;
-            activeSuggestion.set(scope);
+    private GeminiLiveClient openGeminiSession() {
+        LiveSessionDescriptor descriptor = backend.startLiveSession(promptProfileId);
+        GeminiLiveClient client = new GeminiLiveClient(mapper, new GeminiEvents());
+        client.connect(descriptor);
+        return client;
+    }
+
+    private void sendUtterance(SpeakerRole role, byte[] audio) {
+        if (!running.get() || audio == null || audio.length == 0) return;
+        utteranceSender.execute(() -> deliverUtterance(role, audio));
+    }
+
+    private void deliverUtterance(SpeakerRole role, byte[] audio) {
+        boolean retried = false;
+        while (running.get()) {
+            GeminiLiveClient active = awaitConnectedClient();
+            if (active == null) return;
             try {
-                active.sendUtteranceAndAwait(role, audio, control);
+                active.sendUtterance(role, audio);
+                return;
             } catch (Throwable throwable) {
-                fail(throwable);
-            } finally {
-                activeSuggestion.compareAndSet(scope, null);
+                log.warn("Gemini send failed: {}; reconnecting", rootMessage(throwable));
+                requestReconnect(throwable);
+                if (retried) return;
+                retried = true;
             }
-        });
+        }
+    }
+
+    private GeminiLiveClient awaitConnectedClient() {
+        while (running.get()) {
+            GeminiLiveClient current = gemini;
+            if (current != null && !reconnecting.get()) return current;
+            try {
+                Thread.sleep(40);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private void requestReconnect(Throwable cause) {
+        if (!running.get() || !reconnecting.compareAndSet(false, true)) return;
+        AssistantListener current = listener;
+        if (current != null) current.onStatus("Переподключение к Gemini…");
+        reconnectExecutor.execute(() -> reconnectLoop(cause));
+    }
+
+    private void reconnectLoop(Throwable initialCause) {
+        Throwable last = initialCause;
+        GeminiLiveClient previous = gemini;
+        gemini = null;
+        if (previous != null) previous.close();
+
+        for (int attempt = 1; running.get(); attempt++) {
+            try {
+                GeminiLiveClient replacement = openGeminiSession();
+                if (!running.get()) {
+                    replacement.close();
+                    return;
+                }
+                gemini = replacement;
+                reconnecting.set(false);
+                AssistantListener current = listener;
+                if (current != null) current.onStatus("Слушаю звонок");
+                log.info("Gemini reconnected successfully: attempt={}", attempt);
+                return;
+            } catch (Throwable throwable) {
+                last = throwable;
+                log.warn("Gemini reconnect attempt {} failed: {}", attempt, rootMessage(throwable));
+                if (attempt >= 8) break;
+                try {
+                    Thread.sleep(Math.min(2_000L, (attempt - 1L) * 250L));
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+        reconnecting.set(false);
+        if (running.get()) fail(new IllegalStateException(
+                "Не удалось переподключиться к Gemini: " + rootMessage(last), last));
     }
 
     public synchronized void stop() {
         if (!running.compareAndSet(true, false)) return;
-        log.info("Prodamus assistant stopping");
         if (microphoneDetector != null) microphoneDetector.flush();
         if (loopbackDetector != null) loopbackDetector.flush();
         if (microphone != null) microphone.close();
         if (loopback != null) loopback.close();
-        if (gemini != null) gemini.close();
+        GeminiLiveClient active = gemini;
+        gemini = null;
+        if (active != null) active.close();
         microphoneDetector = null;
         loopbackDetector = null;
         microphone = null;
         loopback = null;
-        gemini = null;
-        activeSuggestion.set(null);
-
+        reconnecting.set(false);
         AssistantListener current = listener;
         if (current != null) {
             current.onRunningChanged(false);
@@ -159,14 +192,7 @@ public class AssistantCoordinator {
         }
     }
 
-    public boolean isRunning() {
-        return running.get();
-    }
-
-    private void validate(AppSettings settings, long promptProfileId) {
-        if (settings == null) throw new IllegalArgumentException("Не загружены локальные настройки");
-        if (promptProfileId <= 0) throw new IllegalArgumentException("Выберите роль перед стартом разговора");
-    }
+    public boolean isRunning() { return running.get(); }
 
     private void fail(Throwable throwable) {
         if (!running.get()) return;
@@ -186,20 +212,15 @@ public class AssistantCoordinator {
     public void destroy() {
         stop();
         utteranceSender.shutdownNow();
+        reconnectExecutor.shutdownNow();
     }
 
     private final class GeminiEvents implements GeminiEventListener {
         @Override public void onStatus(String status) { if (listener != null) listener.onStatus(status); }
         @Override public void onSuggestion(String text, boolean complete) {
-            AssistantListener current = listener;
-            SuggestionScope scope = activeSuggestion.get();
-            if (current != null && scope != null) {
-                current.onSuggestion(scope.utteranceId(), scope.responseId(), scope.utteranceFinal(), text, complete);
-            }
+            if (listener != null) listener.onSuggestion(text, complete);
         }
         @Override public void onTranscript(String text) { if (listener != null) listener.onTranscript(text); }
-        @Override public void onError(Throwable error) { fail(error); }
+        @Override public void onError(Throwable error) { requestReconnect(error); }
     }
-
-    private record SuggestionScope(long utteranceId, long responseId, boolean utteranceFinal) { }
 }
