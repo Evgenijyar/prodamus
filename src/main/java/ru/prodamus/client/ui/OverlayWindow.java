@@ -319,11 +319,7 @@ public class OverlayWindow implements AssistantListener {
         suggestionsScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
         suggestionsScroll.getStyleClass().setAll("suggestions-scroll");
         if (!scrollListenerInstalled) {
-            suggestionsScroll.vvalueProperty().addListener((obs, old, value) -> {
-                autoFollow = value.doubleValue() >= 0.985;
-                jumpLatest.setVisible(!autoFollow);
-                jumpLatest.setManaged(!autoFollow);
-            });
+            suggestionsBox.heightProperty().addListener((obs, old, value) -> followSuggestions());
             scrollListenerInstalled = true;
         }
 
@@ -507,8 +503,15 @@ public class OverlayWindow implements AssistantListener {
     }
 
     private void followSuggestions() {
-        if (!autoFollow) return;
-        Platform.runLater(() -> suggestionsScroll.setVvalue(1.0));
+        autoFollow = true;
+        jumpLatest.setVisible(false);
+        jumpLatest.setManaged(false);
+        Platform.runLater(() -> {
+            suggestionsBox.applyCss();
+            suggestionsBox.layout();
+            suggestionsScroll.setVvalue(1.0);
+            Platform.runLater(() -> suggestionsScroll.setVvalue(1.0));
+        });
     }
 
     private void installResizeSupport(Region root) {
@@ -673,6 +676,14 @@ public class OverlayWindow implements AssistantListener {
     }
 
     @Override public void onStatus(String value) { Platform.runLater(() -> setStatus(value)); }
+
+    @Override
+    public void onSuggestionStarted() {
+        Platform.runLater(() -> {
+            liveSuggestion = null;
+            followSuggestions();
+        });
+    }
 
     @Override
     public void onSuggestion(String text, boolean complete) {

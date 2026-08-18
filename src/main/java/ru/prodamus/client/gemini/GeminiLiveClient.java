@@ -153,7 +153,7 @@ public final class GeminiLiveClient implements AutoCloseable {
         }
     }
 
-    private void handleMessage(String json) {
+    void handleMessage(String json) {
         try {
             JsonNode root = mapper.readTree(json);
             receivedMessages++;
@@ -172,6 +172,7 @@ public final class GeminiLiveClient implements AutoCloseable {
 
             String output = content.path("outputTranscription").path("text").asText("");
             if (!output.isBlank()) {
+                if (suggestion.isEmpty()) listener.onSuggestionStarted();
                 suggestion.append(output);
                 listener.onSuggestion(suggestion.toString().trim(), false);
             }

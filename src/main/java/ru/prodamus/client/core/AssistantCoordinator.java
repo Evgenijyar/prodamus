@@ -217,6 +217,9 @@ public class AssistantCoordinator {
 
     private final class GeminiEvents implements GeminiEventListener {
         @Override public void onStatus(String status) { if (listener != null) listener.onStatus(status); }
+        @Override public void onSuggestionStarted() {
+            if (listener != null) listener.onSuggestionStarted();
+        }
         @Override public void onSuggestion(String text, boolean complete) {
             if (listener != null) listener.onSuggestion(text, complete);
         }
