@@ -25,23 +25,15 @@ import java.util.UUID;
 @Service
 public class LiveSessionService {
     private static final List<String> LEASED_STATUSES = List.of("PROVISIONING", "ACTIVE");
-    private static final String CLIENT_DIALOG_PROTOCOL = """
-            Это только технический протокол односессионного клиента Prodamus 2. Роль, стиль продаж и факты задаются
-            исключительно разделами «РОЛЬ / СЦЕНАРИЙ» и «БАЗА ЗНАНИЙ» выше; этот протокол их не заменяет.
-
-            Перед каждым аудиофрагментом приходит [CONTROL]. Поля speaker, utterance_id, response_id и phase достоверны.
-            Не определяй говорящего по смыслу. Фрагменты с одинаковым utterance_id — части одной непрерывной реплики.
-            response_id обозначает один технический запрос; его повтор после reconnect нельзя учитывать второй раз.
-
-            MANAGER_COMPLETE: сохрани реплику менеджера в контексте и верни только —.
-            CLIENT_ACTIVE: клиент ещё говорит. Учти все предыдущие части этого utterance_id и верни одну текущую,
-            полностью сформулированную фразу для менеджера. Не продолжай текст прошлого ответа с середины и не выдавай
-            список вариантов. Если смысл не изменился, разрешено повторить улучшенную полную формулировку.
-            CLIENT_FINAL: реплика клиента завершена. Верни одну самодостаточную законченную рекомендацию по всей реплике.
-
-            Любая видимая рекомендация должна быть готова к произнесению целиком: максимум 2 коротких предложения,
-            без заголовков, Markdown, расшифровки клиента, служебных полей и незаконченных окончаний. Если полезной
-            рекомендации действительно нет, верни только —.
+    private static final String SALES_HELPER_PROMPT = """
+            Ты — незаметный ассистент менеджера по продажам во время живого звонка.
+            Ты получаешь по очереди реплики с метками [КЛИЕНТ] и [МЕНЕДЖЕР].
+            После реплики клиента дай менеджеру короткую, конкретную подсказку на русском языке:
+            что ответить прямо сейчас, какой задать вопрос или как обработать возражение.
+            После реплики менеджера оцени контекст, но отвечай только если есть действительно полезная следующая фраза.
+            Не пересказывай диалог, не здоровайся, не называй себя, не озвучивай служебные метки.
+            Пиши максимум 2–3 коротких предложения, готовых к произнесению.
+            Если подсказка не нужна, ответь одним символом: —
             """;
     private static final String PREDICTIVE_SINGLE_PROTOCOL = """
             Ты — экспериментальный предиктивный ассистент менеджера по продажам во время живого звонка.
@@ -172,12 +164,12 @@ public class LiveSessionService {
         if (reservation == null) throw ApiException.unavailable("SESSION_RESERVATION_FAILED", "Не удалось зарезервировать AI-сессию.");
 
         try {
-            String prompt = buildPrompt(reservation.prompt(), CLIENT_DIALOG_PROTOCOL);
+            String prompt = buildSalesHelperPrompt(reservation.prompt());
             GeminiTokenService.TokenResult token = gemini.createConstrainedToken(
                     credentialService.decrypt(reservation.credential()), reservation.prompt().getModel(), prompt);
             transactions.executeWithoutResult(status -> activate(reservation.sessionId(), token.expiresAt()));
             return new SessionDescriptor(reservation.sessionId(), token.ephemeralToken(), token.expiresAt(),
-                    token.newSessionExpiresAt(), token.websocketUrl(), token.model());
+                    token.newSessionExpiresAt(), token.websocketUrl(), token.model(), prompt);
         } catch (RuntimeException ex) {
             transactions.executeWithoutResult(status -> closeInternal(reservation.sessionId(), "PROVISIONING_ERROR", trim(ex.getMessage(), 480)));
             throw ex;
@@ -228,7 +220,7 @@ public class LiveSessionService {
                         credentialService.decrypt(current.credential()), current.prompt().getModel(), prompt);
                 transactions.executeWithoutResult(status -> activate(current.sessionId(), token.expiresAt()));
                 descriptors.add(new SessionDescriptor(current.sessionId(), token.ephemeralToken(), token.expiresAt(),
-                        token.newSessionExpiresAt(), token.websocketUrl(), token.model()));
+                        token.newSessionExpiresAt(), token.websocketUrl(), token.model(), prompt));
             }
             return new PredictiveSessionBundle(mode, descriptors.getFirst(),
                     descriptors.size() > 1 ? descriptors.get(1) : null);
@@ -380,6 +372,14 @@ public class LiveSessionService {
         return out.toString().trim();
     }
 
+    private String buildSalesHelperPrompt(PromptProfile profile) {
+        StringBuilder out = new StringBuilder(4096);
+        append(out, "БАЗОВЫЙ ПРОМПТ SALES HELPER", SALES_HELPER_PROMPT);
+        append(out, "РОЛЬ / СЦЕНАРИЙ", profile.getSystemPrompt());
+        append(out, "БАЗА ЗНАНИЙ ПРОДАЖ", profile.getKnowledgeBase());
+        return out.toString().trim();
+    }
+
     private void append(StringBuilder out, String title, String value) {
         if (value == null || value.isBlank()) return;
         if (!out.isEmpty()) out.append("\n\n");
@@ -391,6 +391,7 @@ public class LiveSessionService {
     private record Reservation(UUID sessionId, AppUser user, PromptProfile prompt, AiCredential credential) {}
     private record PredictiveReservation(List<Reservation> sessions) {}
     public record SessionDescriptor(UUID sessionId, String ephemeralToken, Instant tokenExpiresAt,
-                                    Instant newSessionExpiresAt, String websocketUrl, String model) {}
+                                    Instant newSessionExpiresAt, String websocketUrl, String model,
+                                    String systemInstruction) {}
     public record PredictiveSessionBundle(String mode, SessionDescriptor tactical, SessionDescriptor predictive) {}
 }

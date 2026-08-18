@@ -112,14 +112,15 @@ class LiveSessionServicePredictiveTest {
     }
 
     @Test
-    void singleSessionUsesOnlyRoleKnowledgeAndBackendTechnicalProtocol() {
+    void singleSessionUsesOriginalSalesHelperPromptWithRoleAndKnowledge() {
         when(user.getCustomInstructions()).thenReturn("User custom instructions must not leak");
         when(credentials.lockEnabledCredentials()).thenReturn(List.of(first));
         Instant expires = Instant.now().plusSeconds(3600);
         when(gemini.createConstrainedToken(anyString(), anyString(), anyString()))
                 .thenReturn(token("single-token", expires));
 
-        service.start(1L, "device", 7L, "device", "2.0.0", "Manual client context must not leak");
+        LiveSessionService.SessionDescriptor result = service.start(
+                1L, "device", 7L, "device", "2.0.0", "Manual client context must not leak");
 
         ArgumentCaptor<String> instruction = ArgumentCaptor.forClass(String.class);
         verify(gemini).createConstrainedToken(eq("key-1"), eq("gemini-3.1-flash-live-preview"),
@@ -127,10 +128,13 @@ class LiveSessionServicePredictiveTest {
         assertThat(instruction.getValue())
                 .contains("Role prompt")
                 .contains("Knowledge")
-                .contains("CLIENT_ACTIVE")
+                .contains("незаметный ассистент менеджера по продажам")
+                .contains("[КЛИЕНТ]")
+                .contains("[МЕНЕДЖЕР]")
                 .doesNotContain("Global")
                 .doesNotContain("User custom instructions must not leak")
                 .doesNotContain("Manual client context must not leak");
+        assertThat(result.systemInstruction()).isEqualTo(instruction.getValue());
     }
 
     @Test

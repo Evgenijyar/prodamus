@@ -64,14 +64,10 @@ public class GeminiTokenService {
         ));
         setup.put("contextWindowCompression", Map.of("slidingWindow", Map.of()));
 
-        List<String> lockedFields = new java.util.ArrayList<>(List.of(
-                "model",
-                "generationConfig",
-                "inputAudioTranscription",
-                "outputAudioTranscription",
-                "realtimeInputConfig",
-                "contextWindowCompression"
-        ));
+        // Клиент повторяет transport-конфигурацию исходного SalesHelper. Закрываем
+        // временным ключом только модель и серверный системный промпт; остальные
+        // поля setup клиент обязан иметь возможность выставить точно как эталон.
+        List<String> lockedFields = new java.util.ArrayList<>(List.of("model"));
         if (systemInstruction != null && !systemInstruction.isBlank()) {
             setup.put("systemInstruction", Map.of("parts", List.of(Map.of("text", systemInstruction))));
             lockedFields.add("systemInstruction");
