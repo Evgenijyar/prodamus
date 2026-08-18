@@ -49,24 +49,9 @@ public class GeminiTokenService {
 
         Map<String, Object> setup = new LinkedHashMap<>();
         setup.put("model", model.startsWith("models/") ? model : "models/" + model);
-        setup.put("generationConfig", Map.of(
-                "responseModalities", List.of("AUDIO"),
-                "temperature", 0.2,
-                "maxOutputTokens", 512,
-                "thinkingConfig", Map.of("thinkingLevel", "minimal", "includeThoughts", false)
-        ));
-        setup.put("inputAudioTranscription", Map.of());
-        setup.put("outputAudioTranscription", Map.of());
-        setup.put("realtimeInputConfig", Map.of(
-                "automaticActivityDetection", Map.of("disabled", true),
-                "activityHandling", "NO_INTERRUPTION",
-                "turnCoverage", "TURN_INCLUDES_ONLY_ACTIVITY"
-        ));
-        setup.put("contextWindowCompression", Map.of("slidingWindow", Map.of()));
 
-        // Клиент повторяет transport-конфигурацию исходного SalesHelper. Закрываем
-        // временным ключом только модель и серверный системный промпт; остальные
-        // поля setup клиент обязан иметь возможность выставить точно как эталон.
+        // В ephemeral token передаются только реально зафиксированные fieldMask-поля.
+        // Полную transport-конфигурацию выставляет нативный клиент по схеме SalesHelper.
         List<String> lockedFields = new java.util.ArrayList<>(List.of("model"));
         if (systemInstruction != null && !systemInstruction.isBlank()) {
             setup.put("systemInstruction", Map.of("parts", List.of(Map.of("text", systemInstruction))));
