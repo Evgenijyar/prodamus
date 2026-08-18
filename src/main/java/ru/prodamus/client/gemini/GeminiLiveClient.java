@@ -137,8 +137,8 @@ public final class GeminiLiveClient implements AutoCloseable {
         if (base.contains("{API_KEY}")) {
             return base.replace("{API_KEY}", URLEncoder.encode(apiKey, StandardCharsets.UTF_8));
         }
-        if (base.matches(".*[?&]key=.*")) return base;
-        return base + (base.contains("?") ? "&" : "?") + "key="
+        if (base.matches(".*[?&]access_token=.*")) return base;
+        return base + (base.contains("?") ? "&" : "?") + "access_token="
                 + URLEncoder.encode(apiKey, StandardCharsets.UTF_8);
     }
 
@@ -243,8 +243,11 @@ public final class GeminiLiveClient implements AutoCloseable {
 
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
-            open.set(false);
-            if (statusCode != WebSocket.NORMAL_CLOSURE) {
+            boolean wasOpen = open.getAndSet(false);
+            log.info("Gemini WebSocket closed: statusCode={}, reason={}", statusCode, reason);
+            // NORMAL_CLOSURE тоже является потерей связи, если close() не вызывался
+            // самим пользователем: Coordinator немедленно запросит новый ephemeral token.
+            if (wasOpen) {
                 listener.onError(new IllegalStateException(
                         "Gemini Live закрыл соединение: " + statusCode + " " + reason));
             }
@@ -254,6 +257,7 @@ public final class GeminiLiveClient implements AutoCloseable {
         @Override
         public void onError(WebSocket webSocket, Throwable error) {
             open.set(false);
+            log.warn("Gemini WebSocket error: {}", rootMessage(error));
             listener.onError(error);
         }
     }
